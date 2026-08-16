@@ -1,0 +1,29 @@
+{
+  "users": {
+    "spamkingxl400@gmail.com": {
+      "name": "Ewewd Master User",
+      "email": "spamkingxl400@gmail.com",
+      "phone": "+91 7777766666",
+      "password": "vippassword999",
+      "role": "user",
+      "status": "active",
+      "lastOtpVerifiedAt": "2026-08-17 02:06:52.971881",
+      "createdAt": "2026-08-16 19:36:20.564485"
+    }
+  },
+  "members": [
+    "KING",
+    "PRINCE",
+    "RIYA"
+  ],
+  "accounts": {},
+  "gc_accounts": {},
+  "tg_accounts": {},
+  "wp_accounts": {},
+  "owner_creds": {
+    "username": "OWNER",
+    "password": "PRINCE@9507325",
+    "name": "SERVER GOD CLAN EMPEROR",
+    "email": "spamkingxl400@gmail.com"
+  }
+}

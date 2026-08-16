@@ -12,22 +12,11 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Large Media & Binaries
+# Binaries & Temporary locks
 ffmpeg.exe
-*.mp4
-*.mp3
-*.m4a
-*.wav
-*.opus
-
-# Local SQLite databases & cache
-*.db
 *.db-shm
 *.db-wal
-*.session
 *.session-journal
-sessions/
-db.json
 
 # IDE & Logs
 .idea/
