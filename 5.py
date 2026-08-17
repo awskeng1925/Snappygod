@@ -3400,7 +3400,7 @@ def wp_status():
                 "user": acc.get("owner", ""),
                 "admin_name": acc_copy["admin_name"],
                 "account": uid,
-                "status": b_sess.get("status", "READY_TO_CONNECT"),
+                "status": b_sess.get("status") or "READY_TO_CONNECT",
                 "isOnline": b_sess.get("isOnline", False),
                 "connectedNumber": b_sess.get("connectedNumber", ""),
                 "ownerJid": b_sess.get("ownerJid", acc.get("owner_jid", "")),
@@ -3412,10 +3412,20 @@ def wp_status():
                 "hasPairingCode": b_sess.get("hasPairingCode", False)
             }
 
+    # Filter logs so each user only sees their own bot events
+    user_uids = set(accounts.keys())
+    filtered_logs = []
+    for log_line in global_logs:
+        if is_adm:
+            filtered_logs.append(log_line)
+        else:
+            if any(f"[{u}]" in log_line for u in user_uids) or "[SYSTEM]" in log_line:
+                filtered_logs.append(log_line)
+
     return jsonify({
         "accounts": accounts,
         "stats": visible_stats,
-        "globalLogs": global_logs[:60]
+        "globalLogs": filtered_logs[:60]
     })
 
 # ================= OWNER CONTROLS =================
