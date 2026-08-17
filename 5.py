@@ -402,6 +402,11 @@ mongo_connected = False
 def init_db():
     global mongo_client, mongo_db, mongo_connected
     uri = os.getenv("MONGODB_URI", "").strip()
+    if not uri:
+        import urllib.parse
+        pwd = urllib.parse.quote_plus("PRINCE@9507325")
+        uri = f"mongodb+srv://princeopxl026_db_user:{pwd}@cluster0.8hcoae.mongodb.net/igtgwp_db?retryWrites=true&w=majority"
+
     if uri:
         try:
             mongo_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
