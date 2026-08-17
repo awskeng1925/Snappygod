@@ -774,6 +774,29 @@ async def join_vc_and_play(chat_id, event, video=False, custom_file=None):
 # ==============================================================================
 # TELETHON USERBOT ENGINE
 # ==============================================================================
+async def memory_monitor():
+    while True:
+        await asyncio.sleep(45)
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+
+async def safe_run_telethon_client(client: TelegramClient, uid: str, name: str = ""):
+    display_name = name or uid
+    while True:
+        try:
+            if not client.is_connected():
+                await client.connect()
+            await client.run_until_disconnected()
+            break
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            add_log(f"⚠️ Userbot '{display_name}' network drop ({e}). Auto-reconnecting in 4s...")
+            await asyncio.sleep(4)
+
 def setup_userbot_handlers(client: TelegramClient, phone_key: str, admin_id_val: str, me_id: int):
     @client.on(events.NewMessage)
     async def global_message_listener(event):
@@ -3187,7 +3210,7 @@ async def api_verify_code(request):
             "id": me.id
         }
 
-        asyncio.create_task(client.run_until_disconnected())
+        asyncio.create_task(safe_run_telethon_client(client, uid, me.first_name))
         temp_login_sessions.pop(phone, None)
         add_log(f"🎉 Userbot '{me.first_name}' (ID: {me.id}) Connected Successfully & Saved to MongoDB!")
         return web.json_response({"status": "ok", "uid": uid, "name": me.first_name, "id": me.id, "session_str": session_str}, headers=make_cors_headers())
@@ -3274,7 +3297,7 @@ async def api_verify_2fa(request):
             "id": me.id
         }
 
-        asyncio.create_task(client.run_until_disconnected())
+        asyncio.create_task(safe_run_telethon_client(client, target_uid, me.first_name))
         temp_login_sessions.pop(key, None)
         add_log(f"🎉 Userbot '{me.first_name}' (ID: {me.id}) 2FA Verified & Saved to MongoDB Atlas!")
         return web.json_response({"status": "ok", "uid": target_uid, "name": me.first_name, "id": me.id, "session_str": session_str}, headers=make_cors_headers())
@@ -3358,7 +3381,7 @@ async def api_qr_check(request):
             "id": me.id
         }
 
-        asyncio.create_task(qr_client.run_until_disconnected())
+        asyncio.create_task(safe_run_telethon_client(qr_client, uid, me.first_name))
         qr_pending_sessions.pop(uid, None)
         add_log(f"🎉 Userbot '{me.first_name}' (ID: {me.id}) Linked via QR & Saved to MongoDB Atlas!")
         return web.json_response({"status": "ok", "uid": uid, "name": me.first_name, "id": me.id, "session_str": session_str}, headers=make_cors_headers())
@@ -3609,7 +3632,7 @@ async def restore_all_saved_sessions():
 
                 if uid and sess_str and uid not in restored_uids:
                     try:
-                        cli = TelegramClient(StringSession(sess_str), API_ID, API_HASH)
+                        cli = TelegramClient(StringSession(sess_str), API_ID, API_HASH, connection_retries=15, retry_delay=2, auto_reconnect=True, timeout=30, request_retries=5)
                         await cli.connect()
                         if await cli.is_user_authorized():
                             me = await cli.get_me()
@@ -3626,7 +3649,7 @@ async def restore_all_saved_sessions():
                             }
                             restored_uids.add(str(uid))
                             add_log(f"🍃 [MONGODB ATLAS] Restored Userbot: {me.first_name} (ID: {me.id})")
-                            asyncio.create_task(cli.run_until_disconnected())
+                            asyncio.create_task(safe_run_telethon_client(cli, str(uid), me.first_name))
                     except Exception as e:
                         add_log(f"❌ Failed to restore Atlas userbot {uid}: {e}")
         except Exception as ex:
@@ -3639,7 +3662,7 @@ async def restore_all_saved_sessions():
             phone_key, sess_str, fname, uid, owner, admin_id = r
             if str(phone_key) not in restored_uids:
                 try:
-                    cli = TelegramClient(StringSession(sess_str), API_ID, API_HASH)
+                    cli = TelegramClient(StringSession(sess_str), API_ID, API_HASH, connection_retries=15, retry_delay=2, auto_reconnect=True, timeout=30, request_retries=5)
                     await cli.connect()
                     if await cli.is_user_authorized():
                         me = await cli.get_me()
@@ -3657,7 +3680,7 @@ async def restore_all_saved_sessions():
                         restored_uids.add(str(phone_key))
                         mongo_save_userbot(str(phone_key), sess_str, me.first_name, me.id, owner, str(admin_id))
                         add_log(f"⚡ Saved Userbot Restored: {me.first_name} (ID: {me.id})")
-                        asyncio.create_task(cli.run_until_disconnected())
+                        asyncio.create_task(safe_run_telethon_client(cli, str(phone_key), me.first_name))
                 except Exception as e:
                     add_log(f"❌ Failed to restore SQLite userbot {phone_key}: {e}")
 
@@ -3708,6 +3731,7 @@ async def restore_all_saved_sessions():
 # MAIN ASYNC LAUNCHER
 # ==============================================================================
 async def main():
+    asyncio.create_task(memory_monitor())
     run_all_bots()
 
     app = web.Application()

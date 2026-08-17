@@ -4,7 +4,8 @@ FROM python:3.11-slim
 # Prevent interactive prompts during apt install
 ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
-    PORT=10000
+    PORT=10000 \
+    NODE_OPTIONS="--expose-gc --max-old-space-size=120 --optimize-for-size"
 
 WORKDIR /app
 

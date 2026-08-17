@@ -18,19 +18,49 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.utils import formatdate, make_msgid
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
-from instagrapi import Client
-from playwright.sync_api import sync_playwright
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
-# Ensure UTF-8 console output on Windows
+# Ensure UTF-8 console output and instant line-buffering on all platforms
 try:
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+    if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
 except Exception:
     pass
 
 load_dotenv()
+
+import gc
+import atexit
+
+# ================= BACKGROUND MEMORY WATCHDOG =================
+def memory_watchdog():
+    while True:
+        time.sleep(45)
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
+threading.Thread(target=memory_watchdog, daemon=True).start()
+
+# ================= PROCESS CLEANUP HANDLER =================
+def cleanup_subprocesses():
+    global baileys_process, tg_process
+    if baileys_process:
+        try:
+            baileys_process.terminate()
+        except Exception:
+            pass
+    if tg_process:
+        try:
+            tg_process.terminate()
+        except Exception:
+            pass
+
+atexit.register(cleanup_subprocesses)
 
 # ================= BAILEYS WHATSAPP MICROSERVICE CONFIG =================
 BAILEYS_SERVICE_URL = os.getenv("BAILEYS_SERVICE_URL", "http://127.0.0.1:20824")
@@ -49,15 +79,15 @@ def ensure_baileys_service():
         script_dir = os.path.dirname(os.path.abspath(__file__))
         node_file = os.path.join(script_dir, "wp_baileys_service.js")
         if os.path.exists(node_file):
-            print(f"[BAILEYS] Starting Baileys Node microservice: {node_file}")
-            baileys_process = subprocess.Popen(["node", "wp_baileys_service.js"], cwd=script_dir)
+            print(f"[BAILEYS] Starting Baileys Node microservice (max memory: 120MB): {node_file}")
+            baileys_process = subprocess.Popen(["node", "--expose-gc", "--max-old-space-size=120", "wp_baileys_service.js"], cwd=script_dir)
             for _ in range(12):
                 time.sleep(0.5)
                 try:
                     r = requests.get(f"{BAILEYS_SERVICE_URL}/health", timeout=1.5)
                     if r.status_code == 200:
                         print("[BAILEYS] WhatsApp Baileys service is online & healthy!")
-                        # Initialize all existing sessions from DB
+                        # Register existing sessions in standby (do not flood live sockets)
                         try:
                             fdb = get_full_db()
                             for u, acc in fdb.get("wp_accounts", {}).items():
@@ -67,6 +97,7 @@ def ensure_baileys_service():
                                     "targets": acc.get("target_numbers", []),
                                     "delay": int(acc.get("delay", 5)),
                                     "prefix": acc.get("prefix", ""),
+                                    "auto_start": False,
                                     "messages": load_messages()
                                 }, timeout=3)
                         except Exception:
@@ -79,6 +110,7 @@ def ensure_baileys_service():
     return False
 
 # ================= TELEGRAM MASTER MICROSERVICE CONFIG =================
+BAILEYS_SERVICE_URL = os.getenv("BAILEYS_SERVICE_URL", "http://127.0.0.1:20824")
 TG_SERVICE_URL = os.getenv("TG_SERVICE_URL", "http://127.0.0.1:20826")
 tg_process = None
 
@@ -131,7 +163,7 @@ def send_raw_email(to_email, subject, html_content, text_content=""):
     to_email = str(to_email).strip().lower()
 
     if not clean_user or not clean_pass:
-        print(f"⚠️ [EMAIL CONFIG] GMAIL_USER or GMAIL_APP_PASS not set properly.")
+        print(f"⚠️ [EMAIL CONFIG] GMAIL_USER or GMAIL_APP_PASS not set properly.", flush=True)
         return False
 
     for attempt in range(1, 4):
@@ -158,10 +190,10 @@ def send_raw_email(to_email, subject, html_content, text_content=""):
                 server.login(clean_user, clean_pass)
                 server.sendmail(clean_user, [to_email], msg.as_string())
                 server.quit()
-                print(f"📧 [EMAIL SUCCESS] Sent to {to_email} via Port 465 SSL | Subject: {subject}")
+                print(f"📧 [EMAIL SUCCESS] Sent to {to_email} via Port 465 SSL | Subject: {subject}", flush=True)
                 return True
             except Exception as e_ssl:
-                print(f"⚠️ [EMAIL NOTICE] Port 465 SSL attempt {attempt} failed ({e_ssl}), trying Port 587 STARTTLS...")
+                print(f"⚠️ [EMAIL NOTICE] Port 465 SSL attempt {attempt} failed ({e_ssl}), trying Port 587 STARTTLS...", flush=True)
 
             # Method 2: Port 587 (STARTTLS)
             try:
@@ -172,17 +204,17 @@ def send_raw_email(to_email, subject, html_content, text_content=""):
                 server.login(clean_user, clean_pass)
                 server.sendmail(clean_user, [to_email], msg.as_string())
                 server.quit()
-                print(f"📧 [EMAIL SUCCESS] Sent to {to_email} via Port 587 STARTTLS | Subject: {subject}")
+                print(f"📧 [EMAIL SUCCESS] Sent to {to_email} via Port 587 STARTTLS | Subject: {subject}", flush=True)
                 return True
             except Exception as e_tls:
-                print(f"❌ [EMAIL ERROR] Port 587 STARTTLS attempt {attempt} failed: {e_tls}")
+                print(f"❌ [EMAIL ERROR] Port 587 STARTTLS attempt {attempt} failed: {e_tls}", flush=True)
 
             time.sleep(1)
         except Exception as e:
-            print(f"❌ [EMAIL ATTEMPT {attempt} FAILED] {to_email}: {e}")
+            print(f"❌ [EMAIL ATTEMPT {attempt} FAILED] {to_email}: {e}", flush=True)
             time.sleep(1)
 
-    print(f"❌ [EMAIL FATAL ERROR] All delivery attempts failed for {to_email}")
+    print(f"❌ [EMAIL FATAL ERROR] All delivery attempts failed for {to_email}", flush=True)
     return False
 
 def send_email_async(to_email, subject, html_content, text_content=""):
@@ -193,7 +225,7 @@ def send_email_async(to_email, subject, html_content, text_content=""):
     ).start()
 
 def send_registration_otp_email(to_email, otp_code):
-    print(f"🔥 [REGISTRATION OTP] Email: '{to_email}' | Code: '{otp_code}' | Master Bypass: '950732'")
+    print(f"🔥 [REGISTRATION OTP] Email: '{to_email}' | Code: '{otp_code}' | Master Bypass: '950732'", flush=True)
     subject = "Your Registration OTP - SERVER GOD CLAN"
     text_content = (
         f"👑 SERVER GOD CLAN PANEL\n\n"
@@ -220,7 +252,7 @@ def send_registration_otp_email(to_email, otp_code):
     send_email_async(to_email, subject, html, text_content)
 
 def send_login_otp_email(to_email, otp_code):
-    print(f"🔥 [LOGIN OTP] Email: '{to_email}' | Code: '{otp_code}' | Master Bypass: '950732'")
+    print(f"🔥 [LOGIN OTP] Email: '{to_email}' | Code: '{otp_code}' | Master Bypass: '950732'", flush=True)
     subject = "Login Security OTP - SERVER GOD CLAN"
     text_content = (
         f"👑 SERVER GOD CLAN SECURITY\n\n"
@@ -1316,6 +1348,7 @@ class InstaUnifiedClient:
             print(f"[{level}] {msg}")
 
     def setup(self):
+        from instagrapi import Client
         # 1. Username & Password Mobile Login
         if self.username and self.password:
             self._log(f"Attempting login for @{self.username}...", "INFO")
@@ -1687,6 +1720,7 @@ def single_gc_playwright_worker(uid):
 
     while gc_running.get(uid, False):
         try:
+            from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
                 log_gc_terminal(uid, "🌐 Launching persistent Chromium browser instance...", "INFO")
                 browser = p.chromium.launch_persistent_context(
@@ -2260,6 +2294,7 @@ def multi_gc_playwright_worker(uid):
     cycle_count = 0
     while ig_running.get(uid, False):
         try:
+            from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
                 log_ig_terminal(uid, "🌐 Launching headless Chromium browser session...", "INFO")
                 browser = p.chromium.launch_persistent_context(
@@ -3203,7 +3238,7 @@ def wp_qr():
             requests.post(f"{BAILEYS_SERVICE_URL}/session/{uid}/refresh_qr", timeout=8)
             time.sleep(1)
 
-        r = requests.get(f"{BAILEYS_SERVICE_URL}/session/{uid}/status", timeout=5)
+        r = requests.get(f"{BAILEYS_SERVICE_URL}/session/{uid}/status?connect=1", timeout=8)
         res_data = r.json()
         return jsonify({
             "status": "ok",

@@ -2,8 +2,10 @@ node_modules
 __pycache__
 *.pyc
 .git
+.gitignore
 .env
-playwright_session_*
-sessions
-*.exe
 ffmpeg.exe
+*.mp4
+*.mp3
+sessions/*
+!sessions/.gitkeep

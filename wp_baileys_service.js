@@ -30,6 +30,15 @@ if (!fs.existsSync(SESSIONS_BASE_DIR)) {
 const activeSessions = {};
 const globalLogs = [];
 
+// Periodic V8 Memory Collection
+if (typeof global.gc === 'function') {
+  setInterval(() => {
+    try {
+      global.gc();
+    } catch (e) {}
+  }, 35000);
+}
+
 function logMsg(uid, msg) {
   const timestamp = new Date().toLocaleTimeString();
   const entry = `[${timestamp}] [${uid || 'SYSTEM'}] ${msg}`;
@@ -38,11 +47,11 @@ function logMsg(uid, msg) {
   if (uid && activeSessions[uid]) {
     activeSessions[uid].logs = activeSessions[uid].logs || [];
     activeSessions[uid].logs.unshift(entry);
-    if (activeSessions[uid].logs.length > 120) activeSessions[uid].logs.pop();
+    if (activeSessions[uid].logs.length > 50) activeSessions[uid].logs.pop();
   }
 
   globalLogs.unshift(entry);
-  if (globalLogs.length > 250) globalLogs.pop();
+  if (globalLogs.length > 80) globalLogs.pop();
 }
 
 function cleanPhone(input) {
@@ -203,6 +212,19 @@ function getSessionAuthDir(uid) {
   return path.join(SESSIONS_BASE_DIR, `wp_auth_${uid}`);
 }
 
+function hasSavedAuthCreds(uid) {
+  try {
+    const dir = getSessionAuthDir(uid);
+    const credsPath = path.join(dir, 'creds.json');
+    if (!fs.existsSync(credsPath)) return false;
+    const raw = fs.readFileSync(credsPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return !!(parsed && (parsed.registered || parsed.me));
+  } catch (e) {
+    return false;
+  }
+}
+
 function deleteSessionAuthDir(uid) {
   const dir = getSessionAuthDir(uid);
   try {
@@ -359,32 +381,24 @@ const ROAST_PUNCHLINES = [
 ];
 
 // ================= INITIALIZE BAILEYS SOCKET FOR A SESSION =================
-async function initSessionSocket(uid, ownerJid = '') {
+async function initSessionSocket(uid, ownerJid = '', options = {}) {
   try {
     const authDir = getSessionAuthDir(uid);
     if (!fs.existsSync(authDir)) {
       fs.mkdirSync(authDir, { recursive: true });
     }
 
-    if (activeSessions[uid] && activeSessions[uid].sock) {
-      try {
-        activeSessions[uid].sock.ev.removeAllListeners();
-        activeSessions[uid].sock.end();
-      } catch (e) {}
-    }
-
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
-    const { version } = await fetchLatestBaileysVersion().catch(() => ({
-      version: [2, 3000, 1015901307],
-      isLatest: true
-    }));
+    const hasAuth = hasSavedAuthCreds(uid);
 
     if (!activeSessions[uid]) {
       activeSessions[uid] = {
         uid,
         authDir,
-        status: 'INITIALIZING',
+        status: hasAuth ? 'INITIALIZING' : 'STANDBY',
         qr: '',
+        qrAttempts: 0,
+        reconnectAttempts: 0,
+        reconnectTimer: null,
         pairingCode: '',
         connectedNumber: '',
         userJid: '',
@@ -422,6 +436,35 @@ async function initSessionSocket(uid, ownerJid = '') {
 
     const sess = activeSessions[uid];
 
+    // If session is unauthenticated and only registering (e.g. backend startup without active login), skip spinning up WebSocket
+    if (!hasAuth && options.onlyRegisterIfUnauthenticated && !options.force) {
+      sess.status = 'STANDBY';
+      return sess;
+    }
+
+    // Clean up existing socket listeners and socket if active
+    if (sess.sock) {
+      try {
+        sess.sock.ev.removeAllListeners();
+        if (sess.sock.ws) {
+          try { sess.sock.ws.close(); } catch (e) {}
+        }
+        try { sess.sock.end(); } catch (e) {}
+      } catch (e) {}
+      sess.sock = null;
+    }
+
+    if (sess.reconnectTimer) {
+      clearTimeout(sess.reconnectTimer);
+      sess.reconnectTimer = null;
+    }
+
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    const { version } = await fetchLatestBaileysVersion().catch(() => ({
+      version: [2, 3000, 1015901307],
+      isLatest: true
+    }));
+
     const sock = makeWASocket({
       version,
       logger: pino({ level: 'silent' }),
@@ -429,8 +472,13 @@ async function initSessionSocket(uid, ownerJid = '') {
       auth: state,
       browser: Browsers.ubuntu('Chrome'),
       syncFullHistory: false,
-      generateHighQualityLinkPreview: true,
-      defaultQueryTimeoutMs: 60000
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+      defaultQueryTimeoutMs: 30000,
+      connectTimeoutMs: 30000,
+      keepAliveIntervalMs: 25000,
+      retryRequestDelayMs: 1000,
+      maxRetries: 3
     });
 
     sess.sock = sock;
@@ -450,19 +498,27 @@ async function initSessionSocket(uid, ownerJid = '') {
       if (qr) {
         sess.status = 'AWAITING_SCAN';
         sess.pairingCode = '';
+        sess.qrAttempts = (sess.qrAttempts || 0) + 1;
         try {
           sess.qr = await QRCode.toDataURL(qr, {
             margin: 2,
             width: 256,
             color: { dark: '#000000', light: '#ffffff' }
           });
-          logMsg(uid, `📷 Live QR Code generated & ready to scan.`);
+          logMsg(uid, `📷 Live QR Code generated & ready to scan (Attempt #${sess.qrAttempts}).`);
         } catch (qrErr) {
           logMsg(uid, `QR rendering error: ${qrErr.message}`);
         }
       }
 
       if (connection === 'open') {
+        sess.qrAttempts = 0;
+        sess.reconnectAttempts = 0;
+        if (sess.reconnectTimer) {
+          clearTimeout(sess.reconnectTimer);
+          sess.reconnectTimer = null;
+        }
+
         const rawUser = sock.user ? (sock.user.id || '') : '';
         const userPhone = rawUser.split(':')[0] || rawUser.split('@')[0] || '';
         sess.userJid = sock.user?.id || '';
@@ -477,18 +533,20 @@ async function initSessionSocket(uid, ownerJid = '') {
 
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 401;
+        const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === 403;
+        const isAuth = hasSavedAuthCreds(uid) || sess.status === 'ONLINE';
 
-        logMsg(uid, `⚠️ Connection closed (Status: ${statusCode || 'Unknown'}). Reconnecting: ${shouldReconnect}`);
+        // Clean up socket instance
+        try {
+          sock.ev.removeAllListeners();
+          if (sock.ws) {
+            try { sock.ws.close(); } catch (e) {}
+          }
+          try { sock.end(); } catch (e) {}
+        } catch (e) {}
+        sess.sock = null;
 
-        if (shouldReconnect) {
-          sess.status = 'RECONNECTING';
-          setTimeout(() => {
-            if (activeSessions[uid]) {
-              initSessionSocket(uid, sess.ownerJid);
-            }
-          }, 3500);
-        } else {
+        if (isLoggedOut) {
           sess.status = 'LOGGED_OUT';
           sess.connectedNumber = '';
           sess.userJid = '';
@@ -496,15 +554,43 @@ async function initSessionSocket(uid, ownerJid = '') {
           sess.pairingCode = '';
           stopAllOperations(sess);
 
-          logMsg(uid, `🔴 Session logged out / unlinked. Automatically purging auth files from disk...`);
+          logMsg(uid, `🔴 Session logged out / unlinked. Cleaned auth directory from disk.`);
           deleteSessionAuthDir(uid);
-
-          setTimeout(() => {
-            if (activeSessions[uid]) {
-              initSessionSocket(uid, sess.ownerJid);
-            }
-          }, 3000);
+          return; // STOP: Do not auto-reconnect!
         }
+
+        if (!isAuth) {
+          // Unauthenticated session awaiting scan
+          if ((sess.qrAttempts || 0) >= 2) {
+            sess.status = 'QR_EXPIRED';
+            sess.qr = '';
+            logMsg(uid, `⏸️ QR scan timed out (Status: ${statusCode || 408}). QR loop paused to save memory. Refresh QR on dashboard when ready.`);
+            return; // STOP: Do not loop indefinitely!
+          } else {
+            sess.status = 'RECONNECTING';
+            logMsg(uid, `⚠️ QR scan timed out (Status: ${statusCode || 408}). Retrying in 5s...`);
+            clearTimeout(sess.reconnectTimer);
+            sess.reconnectTimer = setTimeout(() => {
+              if (activeSessions[uid] && activeSessions[uid].status !== 'LOGGED_OUT' && activeSessions[uid].status !== 'ONLINE') {
+                initSessionSocket(uid, sess.ownerJid, { force: true });
+              }
+            }, 5000);
+            return;
+          }
+        }
+
+        // Authenticated session dropped (temporary network disconnect)
+        sess.reconnectAttempts = (sess.reconnectAttempts || 0) + 1;
+        const backoffDelay = Math.min(30000, 3000 * Math.pow(1.4, Math.min(sess.reconnectAttempts, 6)));
+        sess.status = 'RECONNECTING';
+        logMsg(uid, `⚠️ Connection closed (Status: ${statusCode || 'Unknown'}). Auto-reconnecting in ${Math.round(backoffDelay / 1000)}s (Attempt #${sess.reconnectAttempts})...`);
+
+        clearTimeout(sess.reconnectTimer);
+        sess.reconnectTimer = setTimeout(() => {
+          if (activeSessions[uid] && activeSessions[uid].status !== 'LOGGED_OUT') {
+            initSessionSocket(uid, sess.ownerJid, { force: true });
+          }
+        }, backoffDelay);
       }
     });
 
@@ -1526,11 +1612,12 @@ app.get('/health', (req, res) => {
 
 // Initialize / Create Session
 app.post('/session/init', async (req, res) => {
-  const { uid, owner_jid } = req.body;
+  const { uid, owner_jid, auto_start } = req.body;
   if (!uid) return res.status(400).json({ success: false, message: 'uid is required' });
 
   try {
-    const sess = await initSessionSocket(uid, owner_jid);
+    const onlyReg = (auto_start === false);
+    const sess = await initSessionSocket(uid, owner_jid, { onlyRegisterIfUnauthenticated: onlyReg });
     res.json({
       success: true,
       uid,
@@ -1543,13 +1630,15 @@ app.post('/session/init', async (req, res) => {
   }
 });
 
-// Get Session Status & Telemetry (Auto-starts socket if not active)
+// Get Session Status & Telemetry
 app.get('/session/:uid/status', async (req, res) => {
   const { uid } = req.params;
+  const shouldConnect = req.query.connect === '1' || req.query.connect === 'true';
   let sess = activeSessions[uid];
-  if (!sess || !sess.sock) {
+
+  if (!sess) {
     try {
-      sess = await initSessionSocket(uid);
+      sess = await initSessionSocket(uid, '', { onlyRegisterIfUnauthenticated: !shouldConnect, force: shouldConnect });
     } catch (e) {
       return res.json({
         uid,
@@ -1566,6 +1655,11 @@ app.get('/session/:uid/status', async (req, res) => {
         logs: [e.message]
       });
     }
+  } else if (shouldConnect && (!sess.sock || sess.status === 'QR_EXPIRED' || sess.status === 'NOT_CONNECTED' || sess.status === 'STANDBY' || sess.status === 'LOGGED_OUT' || sess.status === 'DISCONNECTED')) {
+    try {
+      sess.qrAttempts = 0;
+      sess = await initSessionSocket(uid, sess.ownerJid, { force: true });
+    } catch (e) {}
   }
 
   const uptime = sess.connectedAt ? Math.floor((Date.now() - sess.connectedAt) / 1000) : 0;
@@ -1594,8 +1688,13 @@ app.post('/session/:uid/refresh_qr', async (req, res) => {
   const { uid } = req.params;
   try {
     deleteSessionAuthDir(uid);
-    const sess = await initSessionSocket(uid);
-    res.json({ success: true, uid, status: sess.status });
+    const sess = activeSessions[uid];
+    if (sess) {
+      sess.qrAttempts = 0;
+      sess.qr = '';
+    }
+    const newSess = await initSessionSocket(uid, sess ? sess.ownerJid : '', { force: true });
+    res.json({ success: true, uid, status: newSess.status });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -1609,7 +1708,8 @@ app.post('/session/:uid/pair', async (req, res) => {
   let sess = activeSessions[uid];
   if (!sess || !sess.sock) {
     try {
-      sess = await initSessionSocket(uid);
+      if (sess) sess.qrAttempts = 0;
+      sess = await initSessionSocket(uid, sess ? sess.ownerJid : '', { force: true });
     } catch (e) {
       return res.status(500).json({ success: false, message: 'Could not initialize session socket' });
     }
@@ -1622,6 +1722,9 @@ app.post('/session/:uid/pair', async (req, res) => {
 
   try {
     logMsg(uid, `Requesting pairing code for number: +${cleaned}...`);
+    if (!sess.sock) {
+      return res.status(500).json({ success: false, message: 'Socket connecting, please retry in 2 seconds.' });
+    }
     const code = await sess.sock.requestPairingCode(cleaned);
     sess.pairingCode = code;
     sess.status = 'PAIRING';
@@ -1660,6 +1763,11 @@ app.post('/session/:uid/disconnect', async (req, res) => {
 
   stopAllOperations(sess);
 
+  if (sess.reconnectTimer) {
+    clearTimeout(sess.reconnectTimer);
+    sess.reconnectTimer = null;
+  }
+
   try {
     if (sess.sock) {
       try {
@@ -1667,11 +1775,13 @@ app.post('/session/:uid/disconnect', async (req, res) => {
       } catch (e) {}
       try {
         sess.sock.ev.removeAllListeners();
+        if (sess.sock.ws) sess.sock.ws.close();
         sess.sock.end();
       } catch (e) {}
     }
   } catch (e) {}
 
+  sess.sock = null;
   sess.status = 'DISCONNECTED';
   sess.connectedNumber = '';
   sess.userJid = '';
@@ -1691,9 +1801,14 @@ app.post('/session/:uid/delete', async (req, res) => {
 
   if (sess) {
     stopAllOperations(sess);
+    if (sess.reconnectTimer) {
+      clearTimeout(sess.reconnectTimer);
+      sess.reconnectTimer = null;
+    }
     try {
       if (sess.sock) {
         sess.sock.ev.removeAllListeners();
+        if (sess.sock.ws) sess.sock.ws.close();
         sess.sock.end();
       }
     } catch (e) {}
