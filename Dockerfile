@@ -5,7 +5,7 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     PORT=10000 \
-    NODE_OPTIONS="--expose-gc --max-old-space-size=120 --optimize-for-size"
+    NODE_OPTIONS="--max-old-space-size=180"
 
 WORKDIR /app
 
