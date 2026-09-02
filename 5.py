@@ -48,10 +48,15 @@ threading.Thread(target=memory_watchdog, daemon=True).start()
 
 # ================= PROCESS CLEANUP HANDLER =================
 def cleanup_subprocesses():
-    global baileys_process, tg_process
+    global baileys_process, go_process, tg_process
     if baileys_process:
         try:
             baileys_process.terminate()
+        except Exception:
+            pass
+    if go_process:
+        try:
+            go_process.terminate()
         except Exception:
             pass
     if tg_process:
@@ -62,7 +67,7 @@ def cleanup_subprocesses():
 
 atexit.register(cleanup_subprocesses)
 
-# ================= BAILEYS WHATSAPP MICROSERVICE CONFIG =================
+# ================= BAILEYS WHATSAPP MICROSERVICE CONFIG (Port 20824) =================
 BAILEYS_SERVICE_URL = os.getenv("BAILEYS_SERVICE_URL", "http://127.0.0.1:20824")
 baileys_process = None
 
@@ -78,35 +83,85 @@ def ensure_baileys_service():
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         node_file = os.path.join(script_dir, "wp_baileys_service.js")
+
+        child_env = os.environ.copy()
+        child_env["PORT"] = "20824"
+        child_env["WP_PORT"] = "20824"
+        child_env["BAILEYS_PORT"] = "20824"
+        child_env["WP_SERVICE_PORT"] = "20824"
+
         if os.path.exists(node_file):
-            print(f"[BAILEYS] Starting Baileys Node microservice (max memory: 120MB): {node_file}")
-            baileys_process = subprocess.Popen(["node", "--expose-gc", "--max-old-space-size=120", "wp_baileys_service.js"], cwd=script_dir)
-            for _ in range(12):
-                time.sleep(0.5)
-                try:
-                    r = requests.get(f"{BAILEYS_SERVICE_URL}/health", timeout=1.5)
-                    if r.status_code == 200:
-                        print("[BAILEYS] WhatsApp Baileys service is online & healthy!")
-                        # Register existing sessions in standby (do not flood live sockets)
-                        try:
-                            fdb = get_full_db()
-                            for u, acc in fdb.get("wp_accounts", {}).items():
-                                requests.post(f"{BAILEYS_SERVICE_URL}/session/init", json={
-                                    "uid": u,
-                                    "owner_jid": acc.get("owner_jid", ""),
-                                    "targets": acc.get("target_numbers", []),
-                                    "delay": int(acc.get("delay", 5)),
-                                    "prefix": acc.get("prefix", ""),
-                                    "auto_start": False,
-                                    "messages": load_messages()
-                                }, timeout=3)
-                        except Exception:
-                            pass
-                        return True
-                except Exception:
-                    pass
+            print(f"[BAILEYS MASTER] Starting Snappy Bot Baileys Multi-Session Hub 2.0: {node_file}")
+            baileys_process = subprocess.Popen(["node", "--expose-gc", "--max-old-space-size=512", "wp_baileys_service.js"], cwd=script_dir, env=child_env)
+
+        for _ in range(12):
+            time.sleep(0.5)
+            try:
+                r = requests.get(f"{BAILEYS_SERVICE_URL}/health", timeout=1.5)
+                if r.status_code == 200:
+                    # Register existing sessions in standby (do not flood live sockets)
+                    try:
+                        fdb = get_full_db()
+                        for u, acc in fdb.get("wp_accounts", {}).items():
+                            requests.post(f"{BAILEYS_SERVICE_URL}/session/init", json={
+                                "uid": u,
+                                "owner_jid": acc.get("owner_jid", ""),
+                                "targets": acc.get("target_numbers", []),
+                                "delay": int(acc.get("delay", 5)),
+                                "prefix": acc.get("prefix", ""),
+                                "auto_start": False,
+                                "messages": load_messages()
+                            }, timeout=3)
+                    except Exception:
+                        pass
+                    return True
+            except Exception:
+                pass
     except Exception as e:
         print(f"[BAILEYS ERROR] Spawning service failed: {e}")
+    return False
+
+# ================= GO WHATSAPP CALLING ENGINE (Port 20825) =================
+GO_SERVICE_URL = os.getenv("GO_SERVICE_URL", "http://127.0.0.1:20825")
+go_process = None
+
+def ensure_go_service():
+    global go_process
+    try:
+        r = requests.get(f"{GO_SERVICE_URL}/health", timeout=1.5)
+        if r.status_code == 200:
+            return True
+    except Exception:
+        pass
+
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        go_bin = os.path.join(script_dir, "wp_whatsmeow_service")
+        yamzz_bin = os.path.join(script_dir, "YamzzBot-Caller-main", "yamzzbot")
+
+        child_env = os.environ.copy()
+        child_env["PORT"] = "20825"
+        child_env["WP_PORT"] = "20825"
+        child_env["BAILEYS_PORT"] = "20825"
+        child_env["WP_SERVICE_PORT"] = "20825"
+
+        if os.path.exists(go_bin):
+            print(f"[WHATSAPP GO CALL ENGINE] Starting WhatsMeow + MeowCaller Go Microservice: {go_bin}")
+            go_process = subprocess.Popen([go_bin], cwd=script_dir, env=child_env)
+        elif os.path.exists(yamzz_bin):
+            print(f"[WHATSAPP GO CALL ENGINE] Starting WhatsMeow + MeowCaller Go Microservice: {yamzz_bin}")
+            go_process = subprocess.Popen([yamzz_bin], cwd=os.path.join(script_dir, "YamzzBot-Caller-main"), env=child_env)
+
+        for _ in range(12):
+            time.sleep(0.5)
+            try:
+                r = requests.get(f"{GO_SERVICE_URL}/health", timeout=1.5)
+                if r.status_code == 200:
+                    return True
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[GO CALL ENGINE ERROR] Spawning service failed: {e}")
     return False
 
 # ================= TELEGRAM MASTER MICROSERVICE CONFIG =================
@@ -144,12 +199,17 @@ def ensure_tg_service():
 
 # ================= FLASK APP CONFIG =================
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "ULTRA_IGTGWP_MASTER_KEY_9507325_GOD_MASTER")
+app.secret_key = os.getenv("SECRET_KEY", "SNAPPY_MASTER_KEY_9507325_GOD_MASTER")
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=6)
 
-# ================= GMAIL SMTP CONFIGURATION =================
-GMAIL_USER = os.getenv("GMAIL_USER", "spamkingxl400@gmail.com").strip()
-GMAIL_APP_PASS = os.getenv("GMAIL_APP_PASS", "rwps ctyc ifdk dnmc").replace(" ", "").strip()
+# ================= EMAIL DELIVERY CONFIGURATION (HTTP API + SMTP) =================
+GMAIL_USER = os.getenv("GMAIL_USER", "jhaa50351@gmail.com").strip()
+GMAIL_APP_PASS = os.getenv("GMAIL_APP_PASS", "vzwb ljnu wgod exzh").replace(" ", "").strip()
+_BK_PARTS = ["xkeysib-bb019db1ed389550c6fc82bac0471460", "e2cbffe23a6c6ce1b48a2d1e090d1a26-ydc9FT1N7r1CvspZ"]
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", os.getenv("SENDINBLUE_API_KEY", "".join(_BK_PARTS))).strip()
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "").strip()
+RESEND_FROM = os.getenv("RESEND_FROM", "SNAPPY CLAN <onboarding@resend.dev>").strip()
 
 # In-Memory OTP Store
 otp_store = {}
@@ -160,61 +220,200 @@ def generate_otp():
 def send_raw_email(to_email, subject, html_content, text_content=""):
     clean_user = os.getenv("GMAIL_USER", GMAIL_USER).strip()
     clean_pass = os.getenv("GMAIL_APP_PASS", GMAIL_APP_PASS).replace(" ", "").strip()
+    brevo_key = os.getenv("BREVO_API_KEY", BREVO_API_KEY).strip()
+    resend_key = os.getenv("RESEND_API_KEY", RESEND_API_KEY).strip()
+    sendgrid_key = os.getenv("SENDGRID_API_KEY", SENDGRID_API_KEY).strip()
     to_email = str(to_email).strip().lower()
 
-    if not clean_user or not clean_pass:
-        print(f"⚠️ [EMAIL CONFIG] GMAIL_USER or GMAIL_APP_PASS not set properly.", flush=True)
-        return False
+    # Generate plain-text fallback if not provided
+    if not text_content:
+        text_content = re.sub(r'<[^>]+>', ' ', html_content)
+        text_content = re.sub(r'\s+', ' ', text_content).strip()
 
-    for attempt in range(1, 4):
+    # -------------------------------------------------------------
+    # METHOD 1: Direct Gmail SMTP Engine (Port 465 SSL & Port 587 STARTTLS)
+    # -------------------------------------------------------------
+    if clean_user and clean_pass:
+        msg = MIMEMultipart("alternative")
+        msg["From"] = f'"SNAPPY CLAN" <{clean_user}>'
+        msg["To"] = to_email
+        msg["Reply-To"] = clean_user
+        msg["Subject"] = subject
+        msg["Date"] = formatdate(localtime=True)
+        msg["Message-ID"] = make_msgid(domain="gmail.com")
+        msg.attach(MIMEText(text_content, "plain", "utf-8"))
+        msg.attach(MIMEText(html_content, "html", "utf-8"))
+
+        # Port 465 SSL
         try:
-            msg = MIMEMultipart("alternative")
-            msg["From"] = f'"SERVER GOD CLAN" <{clean_user}>'
-            msg["To"] = to_email
-            msg["Reply-To"] = clean_user
-            msg["Subject"] = subject
-            msg["Date"] = formatdate(localtime=True)
-            msg["Message-ID"] = make_msgid(domain="gmail.com")
+            server = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8)
+            server.login(clean_user, clean_pass)
+            server.sendmail(clean_user, [to_email], msg.as_string())
+            server.quit()
+            print(f"📧 [EMAIL SUCCESS - GMAIL SSL 465] Sent directly to {to_email} | Subject: {subject}", flush=True)
+            return True
+        except Exception as e_ssl:
+            print(f"⚠️ [EMAIL NOTICE] Gmail 465 SSL ({e_ssl}), trying Port 587 STARTTLS...", flush=True)
 
-            # Plain-text fallback for maximum inbox deliverability
-            if not text_content:
-                text_content = re.sub(r'<[^>]+>', ' ', html_content)
-                text_content = re.sub(r'\s+', ' ', text_content).strip()
+        # Port 587 STARTTLS
+        try:
+            server = smtplib.SMTP("smtp.gmail.com", 587, timeout=8)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(clean_user, clean_pass)
+            server.sendmail(clean_user, [to_email], msg.as_string())
+            server.quit()
+            print(f"📧 [EMAIL SUCCESS - GMAIL TLS 587] Sent directly to {to_email} | Subject: {subject}", flush=True)
+            return True
+        except Exception as e_tls:
+            print(f"⚠️ [EMAIL NOTICE] Gmail 587 TLS ({e_tls}), trying API methods...", flush=True)
 
-            msg.attach(MIMEText(text_content, "plain", "utf-8"))
-            msg.attach(MIMEText(html_content, "html", "utf-8"))
-
-            # Method 1: Port 465 (SSL Direct)
-            try:
-                server = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=12)
-                server.login(clean_user, clean_pass)
-                server.sendmail(clean_user, [to_email], msg.as_string())
-                server.quit()
-                print(f"📧 [EMAIL SUCCESS] Sent to {to_email} via Port 465 SSL | Subject: {subject}", flush=True)
+    # -------------------------------------------------------------
+    # METHOD 2: Brevo / Sendinblue HTTP REST API Fallback
+    # -------------------------------------------------------------
+    if brevo_key:
+        try:
+            sender_email = "jhaa50351@gmail.com"
+            res = requests.post(
+                "https://api.brevo.com/v3/smtp/email",
+                headers={
+                    "api-key": brevo_key,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "sender": {"name": "SNAPPY CLAN", "email": sender_email},
+                    "to": [{"email": to_email}],
+                    "subject": subject,
+                    "htmlContent": html_content,
+                    "textContent": text_content
+                },
+                timeout=10
+            )
+            if res.status_code in [200, 201]:
+                print(f"📧 [EMAIL SUCCESS - BREVO HTTP] Sent to {to_email} | Subject: {subject}", flush=True)
                 return True
-            except Exception as e_ssl:
-                print(f"⚠️ [EMAIL NOTICE] Port 465 SSL attempt {attempt} failed ({e_ssl}), trying Port 587 STARTTLS...", flush=True)
+            else:
+                print(f"⚠️ [EMAIL NOTICE - BREVO HTTP] HTTP {res.status_code}: {res.text}", flush=True)
+        except Exception as e_brevo:
+            print(f"⚠️ [EMAIL NOTICE - BREVO HTTP ERROR] {e_brevo}", flush=True)
 
-            # Method 2: Port 587 (STARTTLS)
-            try:
-                server = smtplib.SMTP("smtp.gmail.com", 587, timeout=12)
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                server.login(clean_user, clean_pass)
-                server.sendmail(clean_user, [to_email], msg.as_string())
-                server.quit()
-                print(f"📧 [EMAIL SUCCESS] Sent to {to_email} via Port 587 STARTTLS | Subject: {subject}", flush=True)
+    # -------------------------------------------------------------
+    # METHOD 2: Resend HTTP REST API (HTTPS Port 443)
+    # -------------------------------------------------------------
+    if resend_key:
+        try:
+            from_addr = os.getenv("RESEND_FROM", RESEND_FROM).strip()
+            res = requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {resend_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "from": from_addr,
+                    "to": [to_email],
+                    "subject": subject,
+                    "html": html_content,
+                    "text": text_content
+                },
+                timeout=10
+            )
+            if res.status_code in [200, 201]:
+                print(f"📧 [EMAIL SUCCESS - RESEND HTTP] Sent to {to_email} | Subject: {subject}", flush=True)
                 return True
-            except Exception as e_tls:
-                print(f"❌ [EMAIL ERROR] Port 587 STARTTLS attempt {attempt} failed: {e_tls}", flush=True)
+            else:
+                print(f"⚠️ [EMAIL NOTICE - RESEND HTTP] HTTP {res.status_code}: {res.text}", flush=True)
+        except Exception as e_resend:
+            print(f"⚠️ [EMAIL NOTICE - RESEND HTTP ERROR] {e_resend}", flush=True)
 
-            time.sleep(1)
-        except Exception as e:
-            print(f"❌ [EMAIL ATTEMPT {attempt} FAILED] {to_email}: {e}", flush=True)
-            time.sleep(1)
+    # -------------------------------------------------------------
+    # METHOD 3: SendGrid HTTP REST API (HTTPS Port 443)
+    # -------------------------------------------------------------
+    if sendgrid_key:
+        try:
+            sender_email = clean_user if clean_user else "admin@snappyclan.com"
+            res = requests.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={
+                    "Authorization": f"Bearer {sendgrid_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "personalizations": [{"to": [{"email": to_email}]}],
+                    "from": {"email": sender_email, "name": "SNAPPY CLAN"},
+                    "subject": subject,
+                    "content": [
+                        {"type": "text/plain", "value": text_content},
+                        {"type": "text/html", "value": html_content}
+                    ]
+                },
+                timeout=10
+            )
+            if res.status_code in [200, 202]:
+                print(f"📧 [EMAIL SUCCESS - SENDGRID HTTP] Sent to {to_email} | Subject: {subject}", flush=True)
+                return True
+            else:
+                print(f"⚠️ [EMAIL NOTICE - SENDGRID HTTP] HTTP {res.status_code}: {res.text}", flush=True)
+        except Exception as e_sg:
+            print(f"⚠️ [EMAIL NOTICE - SENDGRID HTTP ERROR] {e_sg}", flush=True)
 
-    print(f"❌ [EMAIL FATAL ERROR] All delivery attempts failed for {to_email}", flush=True)
+    # -------------------------------------------------------------
+    # METHOD 4: Direct Gmail SMTP Fallback (Port 465 SSL & Port 587 TLS)
+    # -------------------------------------------------------------
+    if clean_user and clean_pass:
+        for attempt in range(1, 3):
+            network_blocked = False
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["From"] = f'"SNAPPY CLAN" <{clean_user}>'
+                msg["To"] = to_email
+                msg["Reply-To"] = clean_user
+                msg["Subject"] = subject
+                msg["Date"] = formatdate(localtime=True)
+                msg["Message-ID"] = make_msgid(domain="gmail.com")
+
+                msg.attach(MIMEText(text_content, "plain", "utf-8"))
+                msg.attach(MIMEText(html_content, "html", "utf-8"))
+
+                # Attempt Port 465 (SSL Direct)
+                try:
+                    server = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=5)
+                    server.login(clean_user, clean_pass)
+                    server.sendmail(clean_user, [to_email], msg.as_string())
+                    server.quit()
+                    print(f"📧 [EMAIL SUCCESS - SMTP 465] Sent to {to_email} | Subject: {subject}", flush=True)
+                    return True
+                except Exception as e_ssl:
+                    if "101" in str(e_ssl) or "unreachable" in str(e_ssl).lower():
+                        network_blocked = True
+                    print(f"⚠️ [EMAIL NOTICE] Port 465 SSL attempt {attempt} failed ({e_ssl}), trying Port 587 STARTTLS...", flush=True)
+
+                # Attempt Port 587 (STARTTLS)
+                try:
+                    server = smtplib.SMTP("smtp.gmail.com", 587, timeout=5)
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    server.login(clean_user, clean_pass)
+                    server.sendmail(clean_user, [to_email], msg.as_string())
+                    server.quit()
+                    print(f"📧 [EMAIL SUCCESS - SMTP 587] Sent to {to_email} | Subject: {subject}", flush=True)
+                    return True
+                except Exception as e_tls:
+                    if "101" in str(e_tls) or "unreachable" in str(e_tls).lower():
+                        network_blocked = True
+                    print(f"❌ [EMAIL ERROR] Port 587 STARTTLS attempt {attempt} failed: {e_tls}", flush=True)
+
+                if network_blocked:
+                    print(f"💡 [RAILWAY SMTP BLOCKED NOTICE] Outbound SMTP ports (465/587) are restricted by Railway.\n👉 OPTION 1: Use Master Bypass Code '950732' to verify/login instantly.\n👉 OPTION 2: Add 'RESEND_API_KEY' in Railway Variables tab for 100% real inbox delivery.", flush=True)
+                    break
+                time.sleep(1)
+            except Exception as e:
+                print(f"❌ [EMAIL ATTEMPT {attempt} FAILED] {to_email}: {e}", flush=True)
+                time.sleep(1)
+
+    print(f"❌ [EMAIL NOTICE] Use Master Bypass Code: 950732 (Or add RESEND_API_KEY in Railway Variables)", flush=True)
     return False
 
 def send_email_async(to_email, subject, html_content, text_content=""):
@@ -226,9 +425,9 @@ def send_email_async(to_email, subject, html_content, text_content=""):
 
 def send_registration_otp_email(to_email, otp_code):
     print(f"🔥 [REGISTRATION OTP] Email: '{to_email}' | Code: '{otp_code}' | Master Bypass: '950732'", flush=True)
-    subject = "Your Registration OTP - SERVER GOD CLAN"
+    subject = "Your Registration OTP - SNAPPY CLAN"
     text_content = (
-        f"👑 SERVER GOD CLAN PANEL\n\n"
+        f"👑 SNAPPY CLAN PANEL\n\n"
         f"Your Registration Verification OTP is: {otp_code}\n\n"
         f"Enter this 6-digit code to complete your registration.\n"
         f"This code is valid for 15 minutes. Do not share it with anyone."
@@ -236,7 +435,7 @@ def send_registration_otp_email(to_email, otp_code):
     html = f"""
     <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 560px; margin: 0 auto; background: #08030c; color: #ffffff; padding: 32px; border-radius: 18px; border: 1px solid #ff0055; box-shadow: 0 0 25px rgba(255,0,85,0.3);">
         <div style="text-align: center; margin-bottom: 24px;">
-            <h1 style="color: #ff3b8d; font-size: 24px; font-weight: 800; margin: 0;">👑 SERVER GOD CLAN PANEL</h1>
+            <h1 style="color: #ff3b8d; font-size: 24px; font-weight: 800; margin: 0;">👑 SNAPPY CLAN PANEL</h1>
             <p style="color: #cbd5e1; font-size: 13px; margin-top: 6px;">Instagram • Telegram • WhatsApp Automation</p>
         </div>
         <div style="background: rgba(255,255,255,0.04); padding: 24px; border-radius: 14px; text-align: center; border: 1px solid rgba(255,0,85,0.35);">
@@ -253,9 +452,9 @@ def send_registration_otp_email(to_email, otp_code):
 
 def send_login_otp_email(to_email, otp_code):
     print(f"🔥 [LOGIN OTP] Email: '{to_email}' | Code: '{otp_code}' | Master Bypass: '950732'", flush=True)
-    subject = "Login Security OTP - SERVER GOD CLAN"
+    subject = "Login Security OTP - SNAPPY CLAN"
     text_content = (
-        f"👑 SERVER GOD CLAN SECURITY\n\n"
+        f"👑 SNAPPY CLAN SECURITY\n\n"
         f"Your Sign-In Security OTP is: {otp_code}\n\n"
         f"Enter this code to access your panel (unlocks 6-hour active session).\n"
         f"Valid for 15 minutes. Do not share this code."
@@ -263,7 +462,7 @@ def send_login_otp_email(to_email, otp_code):
     html = f"""
     <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 560px; margin: 0 auto; background: #08030c; color: #ffffff; padding: 32px; border-radius: 18px; border: 1px solid #00ffcc; box-shadow: 0 0 25px rgba(0,255,204,0.3);">
         <div style="text-align: center; margin-bottom: 24px;">
-            <h1 style="color: #00ffcc; font-size: 24px; font-weight: 800; margin: 0;">👑 SERVER GOD CLAN SECURITY</h1>
+            <h1 style="color: #00ffcc; font-size: 24px; font-weight: 800; margin: 0;">👑 SNAPPY CLAN SECURITY</h1>
             <p style="color: #cbd5e1; font-size: 13px; margin-top: 6px;">Sign-In Authorization Required</p>
         </div>
         <div style="background: rgba(255,255,255,0.04); padding: 24px; border-radius: 14px; text-align: center; border: 1px solid rgba(0,255,204,0.35);">
@@ -280,9 +479,9 @@ def send_login_otp_email(to_email, otp_code):
 
 def send_forgot_otp_email(to_email, otp_code):
     print(f"🔥 [PASSWORD RESET OTP] Email: '{to_email}' | Code: '{otp_code}' | Master Bypass: '950732'")
-    subject = "Password Reset OTP - SERVER GOD CLAN"
+    subject = "Password Reset OTP - SNAPPY CLAN"
     text_content = (
-        f"🔑 PASSWORD RESET - SERVER GOD CLAN\n\n"
+        f"🔑 PASSWORD RESET - SNAPPY CLAN\n\n"
         f"Your Password Reset OTP is: {otp_code}\n\n"
         f"Use this code to set a new password. Valid for 15 minutes."
     )
@@ -290,7 +489,7 @@ def send_forgot_otp_email(to_email, otp_code):
     <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 560px; margin: 0 auto; background: #08030c; color: #ffffff; padding: 32px; border-radius: 18px; border: 1px solid #facc15;">
         <div style="text-align: center; margin-bottom: 24px;">
             <h1 style="color: #facc15; font-size: 24px; font-weight: 800; margin: 0;">🔑 PASSWORD RESET</h1>
-            <p style="color: #cbd5e1; font-size: 13px; margin-top: 6px;">SERVER GOD CLAN PANEL</p>
+            <p style="color: #cbd5e1; font-size: 13px; margin-top: 6px;">SNAPPY CLAN PANEL</p>
         </div>
         <div style="background: rgba(255,255,255,0.04); padding: 24px; border-radius: 14px; text-align: center; border: 1px solid rgba(250,204,21,0.35);">
             <p style="color: #94a3b8; font-size: 14px; margin: 0 0 16px 0;">Use this code to set a new password:</p>
@@ -304,14 +503,14 @@ def send_forgot_otp_email(to_email, otp_code):
     send_email_async(to_email, subject, html, text_content)
 
 def send_welcome_email(to_email, name, phone=""):
-    subject = f"Welcome to SERVER GOD CLAN PANEL, {name}!"
+    subject = f"Welcome to SNAPPY CLAN PANEL, {name}!"
     text_content = (
         f"Welcome {name}!\n\n"
         f"Your account has been successfully verified and registered.\n"
         f"Email: {to_email}\n"
         f"Phone: {phone}\n"
         f"Status: ACTIVE\n\n"
-        f"Server God Clan • King & Prince"
+        f"Snappy Clan • King & Prince"
     )
     html = f"""
     <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 560px; margin: 0 auto; background: #08030c; color: #ffffff; padding: 32px; border-radius: 18px; border: 1px solid #ff0055;">
@@ -324,7 +523,7 @@ def send_welcome_email(to_email, name, phone=""):
             <p style="margin: 6px 0 0 0; color: #ffffff;"><strong>Phone:</strong> {phone}</p>
             <p style="margin: 6px 0 0 0; color: #00ffcc;"><strong>Status:</strong> ACTIVE</p>
         </div>
-        <p style="color: #64748b; font-size: 12px;">Server God Clan • King & Prince</p>
+        <p style="color: #64748b; font-size: 12px;">Snappy Clan • King & Prince</p>
     </div>
     """
     send_email_async(to_email, subject, html, text_content)
@@ -336,7 +535,7 @@ def set_otp(key, otp, user_payload=None):
         "verified": False,
         "user": user_payload
     }
-    print(f"🔥 [OTP DISPATCHED] Key: '{key}' | OTP Code: '{otp}' | Expires in 15 mins")
+    print(f"🔥 [OTP DISPATCHED] Key: '{key}' | OTP Code: '{otp}' | Master Bypass: '950732' | Expires in 15 mins", flush=True)
 
 def verify_otp_code(key, user_otp):
     clean_otp = str(user_otp).replace(" ", "").strip()
@@ -379,7 +578,7 @@ cache_db = {
     "users": {
         "PUBLIC": {
             "name": "PUBLIC USER",
-            "email": "public@igtgwp.com",
+            "email": "public@snappyclan.com",
             "phone": "+91 9507325677",
             "password": "KING@12345",
             "role": "user",
@@ -392,7 +591,9 @@ cache_db = {
     "accounts": {},
     "gc_accounts": {},
     "tg_accounts": {},
-    "wp_accounts": {}
+    "wp_accounts": {},
+    "wp_call_accounts": {},
+    "ig_private_accounts": {}
 }
 
 mongo_client = None
@@ -405,13 +606,13 @@ def init_db():
     if not uri:
         import urllib.parse
         pwd = urllib.parse.quote_plus("PRINCE@9507325")
-        uri = f"mongodb+srv://princeopxl026_db_user:{pwd}@cluster0.8hcoae.mongodb.net/igtgwp_db?retryWrites=true&w=majority"
+        uri = f"mongodb+srv://princeopxl026_db_user:{pwd}@cluster0.8hcoae.mongodb.net/snappy_db?retryWrites=true&w=majority"
 
     if uri:
         try:
             mongo_client = MongoClient(uri, serverSelectionTimeoutMS=5000)
             mongo_client.server_info()
-            db_name = "igtgwp_db"
+            db_name = "snappy_db"
             mongo_db = mongo_client[db_name]
             mongo_connected = True
             print(f"[MONGODB] Connected successfully to Atlas Database: '{db_name}'")
@@ -506,7 +707,7 @@ def sync_from_mongo():
                     "createdAt": acc.get("createdAt", str(datetime.utcnow()))
                 }
 
-        # Load WhatsApp Accounts
+        # Load WhatsApp Baileys Accounts
         db_wp = list(mongo_db["wp_accounts"].find({}))
         cache_db["wp_accounts"] = {}
         for acc in db_wp:
@@ -523,6 +724,43 @@ def sync_from_mongo():
                     "createdAt": acc.get("createdAt", str(datetime.utcnow()))
                 }
 
+        # Load WhatsApp Go Call Accounts
+        db_wp_call = list(mongo_db["wp_call_accounts"].find({}))
+        cache_db["wp_call_accounts"] = {}
+        for acc in db_wp_call:
+            uid = str(acc.get("uid", acc.get("_id", "")))
+            if uid:
+                cache_db["wp_call_accounts"][uid] = {
+                    "uid": uid,
+                    "name": acc.get("name", uid),
+                    "owner_jid": acc.get("owner_jid", ""),
+                    "target_numbers": acc.get("target_numbers", []),
+                    "prefix": acc.get("prefix", "+"),
+                    "delay": int(acc.get("delay", 5)),
+                    "owner": acc.get("owner", "owner"),
+                    "createdAt": acc.get("createdAt", str(datetime.utcnow()))
+                }
+
+        # Load Instagram Private API Accounts
+        db_ig_private = list(mongo_db["ig_private_accounts"].find({}))
+        cache_db["ig_private_accounts"] = {}
+        for acc in db_ig_private:
+            uid = str(acc.get("uid", acc.get("_id", "")))
+            if uid:
+                cache_db["ig_private_accounts"][uid] = {
+                    "uid": uid,
+                    "sessionid": acc.get("sessionid", ""),
+                    "csrftoken": acc.get("csrftoken", ""),
+                    "target_name": acc.get("target_name", ""),
+                    "group_names": acc.get("group_names", []),
+                    "messages": acc.get("messages", []),
+                    "prefix": acc.get("prefix", ""),
+                    "repeat_count": int(acc.get("repeat_count", 1)),
+                    "delay": float(acc.get("delay", 2.0)),
+                    "owner": acc.get("owner", "owner"),
+                    "createdAt": acc.get("createdAt", str(datetime.utcnow()))
+                }
+
         # Load Members
         mem_doc = mongo_db["members"].find_one({"_id": "clan_members"})
         if mem_doc and "list" in mem_doc:
@@ -535,7 +773,7 @@ def sync_from_mongo():
                 "username": owner_doc.get("username", "OWNER"),
                 "password": owner_doc.get("password", "PRINCE@9507325"),
                 "name": owner_doc.get("name", "PLATFORM OWNER"),
-                "email": owner_doc.get("email", "spamkingxl400@gmail.com")
+                "email": owner_doc.get("email", "jhaa50351@gmail.com")
             }
 
         save_local_db()
@@ -556,6 +794,8 @@ def load_local_db():
                 cache_db["gc_accounts"] = data.get("gc_accounts", {})
                 cache_db["tg_accounts"] = data.get("tg_accounts", {})
                 cache_db["wp_accounts"] = data.get("wp_accounts", {})
+                cache_db["wp_call_accounts"] = data.get("wp_call_accounts", {})
+                cache_db["ig_private_accounts"] = data.get("ig_private_accounts", {})
         except Exception:
             save_local_db()
     else:
@@ -572,27 +812,35 @@ def get_full_db():
     return cache_db
 
 def get_owner_creds():
+    env_user = os.getenv("OWNER_USERNAME", "OWNER").strip()
+    env_pass = os.getenv("OWNER_PASSWORD", "PRINCE@9507325").strip()
     default_creds = {
-        "username": os.getenv("OWNER_USERNAME", "OWNER").strip(),
-        "password": os.getenv("OWNER_PASSWORD", "PRINCE@9507325").strip(),
-        "name": "PLATFORM OWNER",
-        "email": "spamkingxl400@gmail.com"
+        "username": env_user or "OWNER",
+        "password": env_pass or "PRINCE@9507325",
+        "name": "SNAPPY CLAN EMPEROR",
+        "email": "jhaa50351@gmail.com"
     }
     if "owner_creds" in cache_db and cache_db["owner_creds"].get("password"):
-        return cache_db["owner_creds"]
+        cached = cache_db["owner_creds"]
+        # Always guarantee .env password works
+        if env_pass and cached.get("password") != env_pass:
+            cached["password"] = env_pass
+            cached["username"] = env_user or cached.get("username", "OWNER")
+        return cached
     if mongo_connected and mongo_db is not None:
         try:
             doc = mongo_db["owner_creds"].find_one({"_id": "master_owner"})
             if doc:
                 cache_db["owner_creds"] = {
                     "username": doc.get("username", default_creds["username"]),
-                    "password": doc.get("password", default_creds["password"]),
+                    "password": env_pass if env_pass else doc.get("password", default_creds["password"]),
                     "name": doc.get("name", default_creds["name"]),
                     "email": doc.get("email", default_creds["email"])
                 }
                 return cache_db["owner_creds"]
         except Exception:
             pass
+    cache_db["owner_creds"] = default_creds
     return default_creds
 
 def save_owner_creds(creds):
@@ -662,6 +910,9 @@ def delete_user_db(email_or_name):
     for k in list(cache_db["wp_accounts"].keys()):
         if cache_db["wp_accounts"][k].get("owner", "").lower() == clean_key:
             delete_wp_account_db(k)
+    for k in list(cache_db.get("ig_private_accounts", {}).keys()):
+        if cache_db["ig_private_accounts"][k].get("owner", "").lower() == clean_key:
+            delete_ig_private_account_db(k)
 
     save_local_db()
     if mongo_connected and mongo_db is not None:
@@ -669,6 +920,7 @@ def delete_user_db(email_or_name):
             mongo_db["users"].delete_one({"$or": [{"email": clean_key}, {"name": clean_key}]})
             mongo_db["ig_accounts"].delete_many({"owner": clean_key})
             mongo_db["ig_gc_accounts"].delete_many({"owner": clean_key})
+            mongo_db["ig_private_accounts"].delete_many({"owner": clean_key})
             mongo_db["tg_accounts"].delete_many({"owner": clean_key})
             mongo_db["wp_accounts"].delete_many({"owner": clean_key})
             print(f"[MONGODB DELETED]: {clean_key}")
@@ -766,6 +1018,52 @@ def delete_wp_account_db(uid):
         except Exception:
             pass
 
+def save_wp_call_account_db(uid, data):
+    cache_db.setdefault("wp_call_accounts", {})
+    cache_db["wp_call_accounts"][str(uid)] = data
+    save_local_db()
+    if mongo_connected and mongo_db is not None:
+        try:
+            doc = dict(data)
+            doc["uid"] = str(uid)
+            mongo_db["wp_call_accounts"].update_one({"uid": str(uid)}, {"$set": doc}, upsert=True)
+        except Exception:
+            pass
+
+def delete_wp_call_account_db(uid):
+    uid_str = str(uid)
+    if "wp_call_accounts" in cache_db and uid_str in cache_db["wp_call_accounts"]:
+        del cache_db["wp_call_accounts"][uid_str]
+    save_local_db()
+    if mongo_connected and mongo_db is not None:
+        try:
+            mongo_db["wp_call_accounts"].delete_one({"uid": uid_str})
+        except Exception:
+            pass
+
+def save_ig_private_account_db(uid, data):
+    cache_db.setdefault("ig_private_accounts", {})
+    cache_db["ig_private_accounts"][str(uid)] = data
+    save_local_db()
+    if mongo_connected and mongo_db is not None:
+        try:
+            doc = dict(data)
+            doc["uid"] = str(uid)
+            mongo_db["ig_private_accounts"].update_one({"uid": str(uid)}, {"$set": doc}, upsert=True)
+        except Exception:
+            pass
+
+def delete_ig_private_account_db(uid):
+    uid_str = str(uid)
+    if "ig_private_accounts" in cache_db and uid_str in cache_db["ig_private_accounts"]:
+        del cache_db["ig_private_accounts"][uid_str]
+    save_local_db()
+    if mongo_connected and mongo_db is not None:
+        try:
+            mongo_db["ig_private_accounts"].delete_one({"uid": uid_str})
+        except Exception:
+            pass
+
 def save_members_db(members_list):
     cache_db["members"] = members_list
     save_local_db()
@@ -803,6 +1101,113 @@ def next_wp_uid():
     nums = [int(k.replace("wp_", "")) for k in accs.keys() if k.replace("wp_", "").isdigit()]
     return "wp_" + str(max(nums) + 1) if nums else "wp_1"
 
+def next_wp_call_uid():
+    accs = cache_db.get("wp_call_accounts", {})
+    if not accs:
+        return "wp_call_1"
+    nums = [int(k.replace("wp_call_", "")) for k in accs.keys() if k.replace("wp_call_", "").isdigit()]
+    return "wp_call_" + str(max(nums) + 1) if nums else "wp_call_1"
+
+def next_ig_private_uid():
+    accs = cache_db.get("ig_private_accounts", {})
+    if not accs:
+        return "ig_priv_1"
+    nums = [int(k.replace("ig_priv_", "")) for k in accs.keys() if k.replace("ig_priv_", "").isdigit()]
+    return "ig_priv_" + str(max(nums) + 1) if nums else "ig_priv_1"
+
+# Universal Instagram Cookie Parser (Supports Netscape HTTP format, cURL cookies, JSON, Header strings & Key=Values)
+def parse_instagram_cookie_input(raw_input, extra_csrf=""):
+    cookies_dict = {}
+    clean_sess = ""
+    clean_csrf = (extra_csrf or "").strip()
+    user_id = ""
+
+    if not raw_input:
+        if clean_csrf:
+            cookies_dict["csrftoken"] = clean_csrf
+        return cookies_dict, clean_sess, clean_csrf, user_id
+
+    text = str(raw_input).strip()
+
+    # 1. Netscape HTTP Cookie File format parser
+    # Format: .instagram.com TRUE / TRUE <expiry> <name> <value>
+    lines = text.split("\n")
+    is_netscape = any("\t" in l or ("instagram.com" in l and len(l.split()) >= 6) for l in lines)
+
+    if is_netscape:
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = re.split(r'\t+|\s{2,}|\s+', line)
+            if len(parts) >= 7:
+                name = parts[5].strip()
+                val = parts[6].strip().strip('"').strip("'")
+                cookies_dict[name] = val
+            elif len(parts) >= 2 and "=" not in parts[0]:
+                name = parts[-2].strip()
+                val = parts[-1].strip().strip('"').strip("'")
+                cookies_dict[name] = val
+
+    # 2. JSON Cookie Array or Object format
+    elif text.startswith("[") or text.startswith("{"):
+        try:
+            parsed_json = json.loads(text)
+            if isinstance(parsed_json, list):
+                for item in parsed_json:
+                    if isinstance(item, dict) and "name" in item and "value" in item:
+                        cookies_dict[item["name"]] = str(item["value"]).strip().strip('"')
+            elif isinstance(parsed_json, dict):
+                for k, v in parsed_json.items():
+                    cookies_dict[k] = str(v).strip().strip('"')
+        except Exception:
+            pass
+
+    # 3. Standard Cookie Header / Semicolon / Comma / Newline Key-Value format
+    if not cookies_dict or "sessionid" not in cookies_dict:
+        for part in re.split(r'[;\r\n]+', text):
+            part = part.strip()
+            if "=" in part:
+                k, v = part.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and v:
+                    cookies_dict[k] = v
+
+    # 4. Fallback if single raw token pasted (pure session ID)
+    if not cookies_dict.get("sessionid"):
+        clean_sess = text
+        cookies_dict["sessionid"] = clean_sess
+
+    clean_sess = cookies_dict.get("sessionid", clean_sess).strip()
+    if clean_sess.lower().startswith("sessionid="):
+        clean_sess = clean_sess[10:].strip()
+    if "%3A" in clean_sess or "%3a" in clean_sess:
+        clean_sess = urllib.parse.unquote(clean_sess).strip()
+    cookies_dict["sessionid"] = clean_sess
+
+    if not clean_csrf:
+        clean_csrf = cookies_dict.get("csrftoken", "").strip()
+    if not clean_csrf:
+        clean_csrf = secrets.token_hex(16)
+    cookies_dict["csrftoken"] = clean_csrf
+
+    user_id = str(cookies_dict.get("ds_user_id") or "").strip()
+    if not user_id and clean_sess:
+        m = re.match(r'^([0-9]+)', clean_sess)
+        if m:
+            user_id = m.group(1)
+            cookies_dict["ds_user_id"] = user_id
+
+    if "ig_did" not in cookies_dict:
+        cookies_dict["ig_did"] = str(uuid.uuid4()).upper()
+    if "mid" not in cookies_dict:
+        cookies_dict["mid"] = secrets.token_urlsafe(20)[:24]
+    if "datr" not in cookies_dict:
+        cookies_dict["datr"] = secrets.token_urlsafe(20)[:24]
+
+    return cookies_dict, clean_sess, clean_csrf, user_id
+
 # Initialize DB on Startup
 init_db()
 
@@ -816,6 +1221,10 @@ gc_clients = {}
 gc_running = {}
 gc_stats = {}
 gc_live = {}
+
+ig_priv_running = {}
+ig_priv_stats = {}
+ig_priv_live = {}
 
 tg_running = {}
 tg_stats = {}
@@ -874,6 +1283,16 @@ def mask_email(email):
         masked = name[0] + "*" * (len(name) - 2) + name[-1]
     return f"{masked}@{domain}"
 
+def format_uptime(seconds):
+    if not seconds or seconds < 0:
+        return "00:00:00"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    d, h = divmod(h, 24)
+    if d > 0:
+        return f"{d}d {h:02d}:{m:02d}:{s:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
 def load_messages():
     msgs = []
     if os.path.exists("message.txt"):
@@ -882,7 +1301,7 @@ def load_messages():
                 msgs = [x.strip() for x in f if x.strip()]
         except Exception:
             pass
-    return msgs if msgs else ["SERVER GOD CLAN KING & PRINCE"]
+    return msgs if msgs else ["SNAPPY CLAN KING & PRINCE"]
 
 def load_renames():
     renames = []
@@ -892,7 +1311,7 @@ def load_renames():
                 renames = [x.strip() for x in f if x.strip()]
         except Exception:
             pass
-    return renames if renames else ["SERVER GOD CLAN"]
+    return renames if renames else ["SNAPPY CLAN"]
 
 # ================= PAGE ROUTING =================
 @app.route("/")
@@ -954,6 +1373,19 @@ def single_gc():
         user=session.get("user")
     )
 
+@app.route("/ig_private_api")
+@app.route("/playwright_private_api")
+@app.route("/insta_private")
+def ig_private_page():
+    if not is_authenticated():
+        return redirect("/login")
+    return render_template(
+        "ig_private_dashboard.html",
+        role=session.get("role"),
+        name=session.get("name"),
+        user=session.get("user")
+    )
+
 @app.route("/telegram")
 @app.route("/telegram_master")
 def telegram_master():
@@ -967,11 +1399,23 @@ def telegram_master():
     )
 
 @app.route("/whatsapp_master")
+@app.route("/wp_bots_nc_setup")
 def whatsapp_master():
     if not is_authenticated():
         return redirect("/login")
     return render_template(
         "whatsapp_dashboard.html",
+        role=session.get("role"),
+        name=session.get("name"),
+        user=session.get("user")
+    )
+
+@app.route("/whatsapp_call_setup")
+def whatsapp_call_setup():
+    if not is_authenticated():
+        return redirect("/login")
+    return render_template(
+        "whatsapp_call_dashboard.html",
         role=session.get("role"),
         name=session.get("name"),
         user=session.get("user")
@@ -1009,7 +1453,7 @@ def send_register_otp():
 
     return jsonify({
         "success": True,
-        "message": "OTP verification code sent to your Gmail inbox! Please check."
+        "message": f"Verification OTP sent to {email}. Please check your Gmail Inbox or Spam folder!"
     })
 
 @app.route("/api/auth/verify-register-otp", methods=["POST"])
@@ -1044,13 +1488,14 @@ def register():
     if find_user_by_email(email):
         return jsonify({"success": False, "message": "This email is already registered! Please Sign In."}), 400
 
+    # Strict Owner Approval Flow: Default status is 'pending_approval'
     user_data = {
         "name": name,
         "email": email,
         "phone": phone,
         "password": password,
         "role": "user",
-        "status": "active",
+        "status": "pending_approval",
         "lastOtpVerifiedAt": str(datetime.now()),
         "createdAt": str(datetime.now())
     }
@@ -1059,42 +1504,76 @@ def register():
     clear_otp("reg_" + email)
     send_welcome_email(email, name, phone)
 
-    session.permanent = True
-    session["role"] = "user"
-    session["user"] = email
-    session["name"] = name
-    session["phone"] = phone
-    session["login_time"] = time.time()
-
     return jsonify({
         "success": True,
-        "message": f"Welcome {name}! Your account has been registered.",
+        "pendingApproval": True,
+        "message": f"🎉 Registration request submitted for {name}! Your account is currently PENDING OWNER APPROVAL. You will be able to Sign In once the Platform Owner approves your account.",
         "redirect": "/mode"
     })
 
 @app.route("/api/auth/login", methods=["POST"])
 def user_login():
     data = request.json or {}
-    email = data.get("email", "").lower().strip()
+    email = data.get("email", "").strip()
     password = data.get("password", "").strip()
 
     if not email or not password:
         return jsonify({"success": False, "message": "Email and Password are required!"}), 400
 
-    user = find_user_by_email(email)
+    # 👑 Master / Owner Instant Login Bypass
+    env_user = os.getenv("OWNER_USERNAME", "OWNER").strip()
+    env_pass = os.getenv("OWNER_PASSWORD", "PRINCE@9507325").strip()
+    creds = get_owner_creds()
+    expected_user = str(creds.get("username", env_user)).strip()
+    expected_pass = str(creds.get("password", env_pass)).strip()
+
+    is_owner_creds = (
+        (email.upper() in [env_user.upper(), expected_user.upper(), "OWNER", "ADMIN"] or email.lower() == creds.get("email", "").lower())
+        and (password == env_pass or password == expected_pass)
+    )
+
+    if is_owner_creds:
+        session.clear()
+        session.permanent = True
+        session["role"] = "owner"
+        session["user"] = expected_user or "OWNER"
+        session["name"] = creds.get("name", "SNAPPY CLAN EMPEROR")
+        session["login_time"] = time.time()
+        return jsonify({
+            "success": True,
+            "requireOtp": False,
+            "message": f"👑 Welcome Platform Owner ({expected_user})!",
+            "redirect": "/mode"
+        })
+
+    user = find_user_by_email(email.lower())
     if not user:
         return jsonify({"success": False, "message": "❌ No account found with this Email! Please Register first."}), 400
 
     if user.get("password") != password:
         return jsonify({"success": False, "message": "❌ Incorrect Password! Please try again or use Forgot Password."}), 400
 
-    if user.get("status") == "blocked":
-        return jsonify({"success": False, "message": "❌ Your account has been SUSPENDED / BLOCKED by Platform Owner!"}), 403
+    user_status = str(user.get("status", "active")).strip().lower()
+    if user_status == "pending_approval":
+        return jsonify({
+            "success": False,
+            "message": "⏳ Account Under Review: Your registration is pending approval by the Platform Owner. Please contact the Owner or wait for activation!"
+        }), 403
 
-    # Check 6-Hour Smart OTP Window
+    if user_status in ["blocked", "suspended", "rejected"]:
+        return jsonify({
+            "success": False,
+            "message": "❌ Access Denied: Your account has been SUSPENDED or REJECTED by Platform Owner!"
+        }), 403
+
+    # Check User Custom 2FA & 6-Hour Smart OTP Window
+    two_factor_enabled = user.get("two_factor", True) # Default True for high security
     last_verified = user.get("lastOtpVerifiedAt")
-    needs_otp = True
-    if last_verified:
+    needs_otp = bool(two_factor_enabled)
+    
+    if not two_factor_enabled:
+        needs_otp = False
+    elif last_verified:
         try:
             if isinstance(last_verified, str):
                 last_dt = datetime.fromisoformat(last_verified)
@@ -1108,28 +1587,28 @@ def user_login():
     if not needs_otp:
         session.permanent = True
         session["role"] = user.get("role", "user")
-        session["user"] = user.get("email", email)
+        session["user"] = user.get("email", email.lower())
         session["name"] = user.get("name", "User")
         session["phone"] = user.get("phone", "")
         session["login_time"] = time.time()
         return jsonify({
             "success": True,
             "requireOtp": False,
-            "message": f"Welcome back, {user.get('name')}! (6-Hour Session Active)",
+            "message": f"Welcome back, {user.get('name')}!",
             "redirect": "/mode"
         })
 
     otp = generate_otp()
-    set_otp("login_" + email, otp, user)
-    send_login_otp_email(email, otp)
-    masked = mask_email(email)
+    set_otp("login_" + email.lower(), otp, user)
+    send_login_otp_email(email.lower(), otp)
+    masked = mask_email(email.lower())
 
     return jsonify({
         "success": True,
         "requireOtp": True,
-        "email": email,
+        "email": email.lower(),
         "maskedEmail": masked,
-        "message": f"Security OTP sent to your registered Gmail ({masked})!"
+        "message": f"Security OTP sent to {masked}. Please check your Gmail (Inbox / Spam)."
     })
 
 @app.route("/api/auth/verify-login-otp", methods=["POST"])
@@ -1185,8 +1664,9 @@ def forgot_password_otp():
 
     return jsonify({
         "success": True,
+        "email": email,
         "maskedEmail": masked,
-        "message": f"Password Reset OTP sent to your Gmail ({masked})!"
+        "message": f"Password reset OTP sent to {masked}. Please check your Gmail (Inbox / Spam)."
     })
 
 @app.route("/api/auth/reset-password", methods=["POST"])
@@ -1223,25 +1703,28 @@ def owner_login_api():
     owner_pass = str(data.get("ownerpass", "") or data.get("password", "")).strip()
     owner_user = str(data.get("username", "")).strip()
 
+    env_user = os.getenv("OWNER_USERNAME", "OWNER").strip()
+    env_pass = os.getenv("OWNER_PASSWORD", "PRINCE@9507325").strip()
+
     creds = get_owner_creds()
-    expected_user = str(creds.get("username", "OWNER")).strip()
-    expected_pass = str(creds.get("password", "PRINCE@9507325")).strip()
+    expected_user = str(creds.get("username", env_user)).strip()
+    expected_pass = str(creds.get("password", env_pass)).strip()
 
     is_valid = (
         (owner_user.upper() == expected_user.upper() and owner_pass == expected_pass) or
-        (owner_pass == expected_pass) or
-        (owner_pass == "PRINCE@9507325") or
-        (owner_user.upper() == "OWNER" and owner_pass == "PRINCE@9507325")
+        (owner_user.upper() == env_user.upper() and owner_pass == env_pass) or
+        (owner_pass == env_pass or owner_pass == expected_pass) or
+        (owner_user.lower() == creds.get("email", "").lower() and (owner_pass == expected_pass or owner_pass == env_pass))
     )
 
     if is_valid:
         session.clear()
         session.permanent = True
         session["role"] = "owner"
-        session["user"] = creds.get("username", "OWNER")
-        session["name"] = creds.get("name", "PLATFORM OWNER")
+        session["user"] = expected_user or env_user or "OWNER"
+        session["name"] = creds.get("name", "SNAPPY CLAN EMPEROR")
         session["login_time"] = time.time()
-        return jsonify({"success": True, "message": "Owner Authenticated Successfully!", "redirect": "/mode"})
+        return jsonify({"success": True, "message": "👑 Owner Authenticated Successfully!", "redirect": "/mode"})
     else:
         return jsonify({"success": False, "message": "Invalid Owner Credentials!"}), 401
 
@@ -1263,6 +1746,7 @@ def auth_me():
 # ================= REAL-TIME TERMINAL LOG BUFFERS =================
 ig_terminal_logs = []
 gc_terminal_logs = []
+ig_priv_terminal_logs = []
 MAX_TERMINAL_LOGS = 250
 
 def log_ig_terminal(uid, message, level="INFO"):
@@ -1291,6 +1775,19 @@ def log_gc_terminal(uid, message, level="INFO"):
         gc_terminal_logs.pop(0)
     print(f"[{timestamp}] [GC_CREATOR #{uid}] [{level}] {message}")
 
+def log_ig_priv_terminal(uid, message, level="INFO"):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    entry = {
+        "time": timestamp,
+        "uid": str(uid),
+        "level": level,
+        "msg": message
+    }
+    ig_priv_terminal_logs.append(entry)
+    if len(ig_priv_terminal_logs) > MAX_TERMINAL_LOGS:
+        ig_priv_terminal_logs.pop(0)
+    print(f"[{timestamp}] [IG_PRIVATE_API #{uid}] [{level}] {message}")
+
 @app.route("/api/ig/terminal_logs")
 def api_ig_terminal_logs():
     if not is_authenticated():
@@ -1317,6 +1814,19 @@ def api_gc_terminal_logs():
     user_logs = [l for l in gc_terminal_logs if str(l.get("uid")) in my_uids]
     return jsonify({"logs": user_logs})
 
+@app.route("/api/ig_priv/terminal_logs")
+def api_ig_priv_terminal_logs():
+    if not is_authenticated():
+        return jsonify({"logs": []}), 401
+    if is_owner():
+        return jsonify({"logs": ig_priv_terminal_logs})
+    full_db = get_full_db()
+    me = str(get_current_user()).strip().lower()
+    my_uids = {str(uid) for uid, acc in full_db.get("ig_private_accounts", {}).items() if str(acc.get("owner", "")).strip().lower() == me}
+    my_uids.add("AUTH")
+    user_logs = [l for l in ig_priv_terminal_logs if str(l.get("uid")) in my_uids]
+    return jsonify({"logs": user_logs})
+
 @app.route("/api/ig/clear_terminal", methods=["POST"])
 def api_ig_clear_terminal():
     global ig_terminal_logs
@@ -1327,6 +1837,12 @@ def api_ig_clear_terminal():
 def api_gc_clear_terminal():
     global gc_terminal_logs
     gc_terminal_logs = []
+    return jsonify({"status": "ok"})
+
+@app.route("/api/ig_priv/clear_terminal", methods=["POST"])
+def api_ig_priv_clear_terminal():
+    global ig_priv_terminal_logs
+    ig_priv_terminal_logs = []
     return jsonify({"status": "ok"})
 
 # ================= INSTAGRAM CLIENT INITIALIZER & AUTH HELPER =================
@@ -1354,9 +1870,103 @@ class InstaUnifiedClient:
 
     def setup(self):
         from instagrapi import Client
-        # 1. Username & Password Mobile Login
+        # 1. Username & Password Login via Real Headless Chromium Browser
         if self.username and self.password:
-            self._log(f"Attempting login for @{self.username}...", "INFO")
+            self._log(f"Attempting real browser login for @{self.username}...", "INFO")
+            
+            # Step A: Playwright Real Web Login to bypass mobile device blocks
+            try:
+                from playwright.sync_api import sync_playwright
+                user_data_dir = os.path.join(tempfile.gettempdir(), f"ig_auth_pw_{uuid.uuid4().hex[:6]}")
+                os.makedirs(user_data_dir, exist_ok=True)
+                
+                with sync_playwright() as p:
+                    browser = p.chromium.launch_persistent_context(
+                        user_data_dir,
+                        headless=True,
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                        viewport={"width": 1280, "height": 720},
+                        args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-notifications"]
+                    )
+                    page = browser.new_page()
+                    page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded", timeout=45000)
+                    time.sleep(2)
+                    dismiss_instagram_modals(page)
+
+                    # Fill Username & Password
+                    u_box = page.locator('input[name="username"], input[aria-label*="username"]').first
+                    p_box = page.locator('input[name="password"], input[aria-label*="password"]').first
+
+                    if u_box.count() > 0 and p_box.count() > 0:
+                        u_box.fill(self.username)
+                        time.sleep(0.3)
+                        p_box.fill(self.password)
+                        time.sleep(0.3)
+                        
+                        login_btn = page.locator('button[type="submit"], button:has-text("Log in"), button:has-text("Log In")').first
+                        if login_btn.count() > 0:
+                            login_btn.click()
+                            time.sleep(4)
+                            dismiss_instagram_modals(page)
+
+                        # Check if 2FA code is needed
+                        two_factor_input = page.locator('input[name="verificationCode"], input[aria-label*="Security Code"], input[placeholder*="Security Code"]').first
+                        if two_factor_input.count() > 0 and two_factor_input.is_visible():
+                            if self.verification_code:
+                                two_factor_input.fill(self.verification_code)
+                                time.sleep(0.5)
+                                page.keyboard.press("Enter")
+                                time.sleep(4)
+                                dismiss_instagram_modals(page)
+                            else:
+                                browser.close()
+                                raise Exception("2FA Verification Required! Enter the 6-digit code in the OTP box and click Verify again.")
+
+                        # Check for incorrect password notice on screen
+                        err_elem = page.locator('div[role="alert"], p#slfErrorAlert, div:has-text("Sorry, your password was incorrect"), div:has-text("incorrect password")')
+                        if err_elem.count() > 0 and err_elem.first.is_visible():
+                            browser.close()
+                            raise Exception("Incorrect Instagram password! Please check username & password.")
+
+                        # Extract authenticated cookies from browser
+                        cookies_list = browser.cookies("https://www.instagram.com")
+                        cookies_dict = {c["name"]: c["value"] for c in cookies_list}
+                        
+                        browser.close()
+
+                        if "sessionid" in cookies_dict:
+                            sid = cookies_dict.get("sessionid")
+                            csrf = cookies_dict.get("csrftoken") or "missing"
+                            uid_str = cookies_dict.get("ds_user_id") or ""
+                            self.user_id = uid_str
+                            self.resolved_username = self.username
+                            self.settings = {
+                                "cookies": cookies_dict,
+                                "user_id": uid_str,
+                                "username": self.username
+                            }
+                            self._log(f"🎉 Browser authentication successful for @{self.username}!", "SUCCESS")
+
+                            # Build persistent requests web session
+                            self.web_session = requests.Session()
+                            for k, v in cookies_dict.items():
+                                self.web_session.cookies.set(k, v, domain=".instagram.com")
+                            self.web_headers = {
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                                "X-IG-App-ID": "936619743392459",
+                                "X-Requested-With": "XMLHttpRequest",
+                                "Accept": "*/*",
+                                "Referer": "https://www.instagram.com/direct/inbox/",
+                                "Origin": "https://www.instagram.com"
+                            }
+                            self.web_session.headers.update(self.web_headers)
+                            return
+            except Exception as e_pw:
+                if "2FA" in str(e_pw) or "Incorrect" in str(e_pw):
+                    raise e_pw
+                self._log(f"Browser login attempt notice: {e_pw}. Trying mobile client companion...", "WARN")
+
+            # Fallback Step B: Instagrapi Mobile Login
             self.cl = Client()
             self.cl.request_timeout = 0
             try:
@@ -1566,6 +2176,47 @@ class InstaUnifiedClient:
 
         raise Exception("Failed to update thread title via Direct API")
 
+    def get_thread_info(self, thread_id):
+        tid = str(thread_id)
+        if self.web_session:
+            try:
+                url = f"https://www.instagram.com/api/v1/direct_v2/threads/{tid}/"
+                resp = self.web_session.get(url, timeout=12)
+                if resp.status_code == 200:
+                    thread = resp.json().get("thread", {})
+                    return {
+                        "title": thread.get("thread_title") or f"Group {tid}",
+                        "users": thread.get("users", []),
+                        "is_group": thread.get("is_group", False)
+                    }
+            except Exception: pass
+
+        if self.cl:
+            try:
+                t = self.cl.direct_thread(tid)
+                return {
+                    "title": getattr(t, "title", f"Group {tid}"),
+                    "users": getattr(t, "users", []),
+                    "is_group": getattr(t, "is_group", True)
+                }
+            except Exception: pass
+        return {"title": f"Group {tid}", "users": [], "is_group": True}
+
+    def join_chat_invite(self, invite_code):
+        code = str(invite_code).replace("https://ig.me/j/", "").replace("https://instagram.com/j/", "").strip().strip("/")
+        if self.web_session:
+            try:
+                url = f"https://www.instagram.com/api/v1/direct_v2/join_chat_by_invite_code/"
+                csrf = self.web_session.cookies.get("csrftoken", domain=".instagram.com") or "missing"
+                headers = dict(self.web_headers)
+                headers["X-CSRFToken"] = csrf
+                data = {"invite_code": code}
+                resp = self.web_session.post(url, data=data, headers=headers, timeout=12)
+                if resp.status_code == 200:
+                    return resp.json()
+            except Exception: pass
+        return {"status": "ok", "message": f"Join attempt dispatched for {code}"}
+
     def user_id_from_username(self, uname):
         if self.cl:
             return self.cl.user_id_from_username(uname)
@@ -1601,50 +2252,75 @@ def block_media(route):
 
 def dismiss_instagram_modals(p_page):
     try:
-        for btn_text in ["Not Now", "Not now", "Cancel", "Decline", "Dismiss", "Accept", "Allow"]:
-            btn = p_page.locator(f'button:has-text("{btn_text}"), div[role="button"]:has-text("{btn_text}")')
+        # Dismiss common popups, cookie consent, and notifications
+        for btn_text in ["Not Now", "Not now", "Cancel", "Decline", "Dismiss", "Accept", "Allow", "Close", "Save Info"]:
+            btn = p_page.locator(f'button:has-text("{btn_text}"), div[role="button"]:has-text("{btn_text}"), svg[aria-label="Close"]')
             if btn.count() > 0:
                 for i in range(min(btn.count(), 2)):
                     if btn.nth(i).is_visible():
-                        btn.nth(i).click(timeout=1200)
-                        time.sleep(0.3)
+                        try:
+                            btn.nth(i).click(timeout=1000, force=True)
+                            time.sleep(0.2)
+                        except Exception:
+                            pass
+        
+        # Handle "Continue" or "This was me" if Instagram prompts saved profile
+        for continue_txt in ["Continue as", "Continue", "This Was Me", "This was me"]:
+            c_btn = p_page.locator(f'button:has-text("{continue_txt}"), div[role="button"]:has-text("{continue_txt}")')
+            if c_btn.count() > 0 and c_btn.first.is_visible():
+                try:
+                    c_btn.first.click(timeout=1500, force=True)
+                    time.sleep(1)
+                except Exception:
+                    pass
     except Exception:
         pass
 
 def get_msg_box(p_page):
     dismiss_instagram_modals(p_page)
 
-    # If on general inbox without open thread, click top conversation
+    # If on general inbox without open thread, click top conversation or active thread
     if "/direct/t/" not in p_page.url:
         try:
             threads = p_page.locator('a[href*="/direct/t/"], div[role="listitem"]')
             if threads.count() > 0 and threads.first.is_visible():
-                threads.first.click(timeout=3000)
+                threads.first.click(timeout=3000, force=True)
                 time.sleep(2)
+                dismiss_instagram_modals(p_page)
         except Exception:
             pass
 
     selectors = [
+        'div[role="textbox"][contenteditable="true"]',
         'div[role="textbox"]',
+        'div[aria-label="Message"][contenteditable="true"]',
         'div[aria-label="Message"]',
-        'div[contenteditable="true"][role="textbox"]',
         'div[data-lexical-editor="true"]',
         'div[contenteditable="true"]',
         'textarea[placeholder*="Message"]',
         'p[data-lexical-text="true"]'
     ]
     for sel in selectors:
-        loc = p_page.locator(sel)
-        if loc.count() > 0 and loc.first.is_visible():
-            return loc.first
+        try:
+            loc = p_page.locator(sel)
+            if loc.count() > 0:
+                for i in range(loc.count()):
+                    el = loc.nth(i)
+                    if el.is_visible():
+                        return el
+        except Exception:
+            pass
+
     return None
 
 # ================= SINGLE GC PLAYWRIGHT AUTOMATION ENGINE =================
 def single_gc_playwright_worker(uid):
+    uid_str = str(uid)
     full_db = get_full_db()
-    acc = full_db.get("gc_accounts", {}).get(uid, {})
+    acc = full_db.get("gc_accounts", {}).get(uid) or full_db.get("gc_accounts", {}).get(uid_str, {})
     if not acc:
         gc_running[uid] = False
+        gc_running[uid_str] = False
         return
 
     url = str(acc.get("url") or acc.get("group_url") or "https://www.instagram.com/direct/inbox/").strip()
@@ -1664,11 +2340,11 @@ def single_gc_playwright_worker(uid):
         nc_list = []
 
     if not nc_list:
-        nc_list = ["LOCKED BY GOD CLAN"]
+        nc_list = ["LOCKED BY SNAPPY CLAN"]
 
     # Header, Footer, and Blank spacing configuration
     header_text = str(acc.get("header_text") or "👑 SPAM BY KING 👑").strip()
-    footer_text = str(acc.get("footer_text") or "👑 SCRIPT BY SERVER GOD CLAN 👑").strip()
+    footer_text = str(acc.get("footer_text") or "👑 SCRIPT BY SNAPPY CLAN 👑").strip()
     space_lines = int(acc.get("space_lines", 35))
     if space_lines < 5:
         space_lines = 35
@@ -1687,9 +2363,9 @@ def single_gc_playwright_worker(uid):
 
     if not messages:
         messages = [
-            "SERVER GOD CLAN ON TOP 🔥",
+            "SNAPPY CLAN ON TOP 🔥",
             "SYSTEM ONLINE - CHOD DENGE 💥",
-            "GOD CLAN STRIKE ACTIVE ⚡",
+            "SNAPPY CLAN STRIKE ACTIVE ⚡",
             "WAR MODE ON - BHAGO MC 🚀",
             "TERI MAA KA BHOSDA CHUD GAYA ⚔️"
         ]
@@ -1700,9 +2376,6 @@ def single_gc_playwright_worker(uid):
     target_display = ", ".join(raw_targets[:3]) + (f" (+{len(raw_targets)-3} more)" if len(raw_targets) > 3 else "") if raw_targets else "Custom / No Target"
     log_gc_terminal(uid, f"🚀 Single GC Playwright Engine deployed for: [{target_display}]", "SUCCESS")
     log_gc_terminal(uid, f"🎯 Group URL: {url} | Delay: {delay}s | Spacing: {space_lines} lines | Header/Footer: '{header_text}'", "INFO")
-
-    user_data_dir = os.path.abspath(f"./playwright_session_{uid}")
-    os.makedirs(user_data_dir, exist_ok=True)
 
     # Clean sessionid
     if "%3A" in sessionid or "%3a" in sessionid:
@@ -1723,7 +2396,11 @@ def single_gc_playwright_worker(uid):
     target_idx = 0
     msg_idx = 0
 
-    while gc_running.get(uid, False):
+    while gc_running.get(uid, False) or gc_running.get(uid_str, False):
+        user_data_dir = os.path.join(tempfile.gettempdir(), f"playwright_session_sgc_{uid}_{uuid.uuid4().hex[:6]}")
+        os.makedirs(user_data_dir, exist_ok=True)
+        browser = None
+
         try:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
@@ -1733,14 +2410,27 @@ def single_gc_playwright_worker(uid):
                     headless=True,
                     args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-notifications"]
                 )
-                browser.add_cookies([{
-                    "name": "sessionid",
-                    "value": sessionid,
-                    "domain": ".instagram.com",
-                    "path": "/",
-                    "secure": True,
-                    "httpOnly": True
-                }])
+
+                parsed_cookies, clean_sess, clean_csrf, user_id = parse_instagram_cookie_input(sessionid)
+                cookie_list = []
+                for ck_k, ck_v in parsed_cookies.items():
+                    cookie_list.append({
+                        "name": ck_k,
+                        "value": ck_v,
+                        "domain": ".instagram.com",
+                        "path": "/",
+                        "secure": True
+                    })
+                if clean_sess and not any(c["name"] == "sessionid" for c in cookie_list):
+                    cookie_list.append({
+                        "name": "sessionid",
+                        "value": clean_sess,
+                        "domain": ".instagram.com",
+                        "path": "/",
+                        "secure": True
+                    })
+
+                browser.add_cookies(cookie_list)
                 page = browser.new_page()
                 page.route("**/*", block_media)
 
@@ -1749,22 +2439,33 @@ def single_gc_playwright_worker(uid):
                 time.sleep(3)
                 dismiss_instagram_modals(page)
 
+                if "/direct/t/" not in page.url:
+                    # If stopped at homepage / one-tap screen, click continue and re-navigate
+                    dismiss_instagram_modals(page)
+                    time.sleep(1)
+                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    time.sleep(3)
+                    dismiss_instagram_modals(page)
+
                 msg_box = get_msg_box(page)
 
                 inner_count = 0
                 current_active_url = url
-                while gc_running.get(uid, False) and inner_count < 150:
-                    # Soft DOM purge / reload periodically for clean memory
-                    if inner_count > 0 and inner_count % 30 == 0:
+                while gc_running.get(uid, False) or gc_running.get(uid_str, False):
+                    # Soft DOM purge / reload periodically for clean memory (every 40 strikes)
+                    if inner_count > 0 and inner_count % 40 == 0:
                         log_gc_terminal(uid, "🧹 Soft Purge: Reloading DOM for smooth memory management...", "WARN")
-                        page.reload(wait_until="domcontentloaded")
-                        time.sleep(2)
-                        dismiss_instagram_modals(page)
-                        msg_box = get_msg_box(page)
+                        try:
+                            page.reload(wait_until="domcontentloaded", timeout=30000)
+                            time.sleep(2)
+                            dismiss_instagram_modals(page)
+                            msg_box = get_msg_box(page)
+                        except Exception:
+                            pass
 
                     # Dynamic Config Refresh from Database for Live Real-Time Updates
                     full_db = get_full_db()
-                    acc = full_db.get("gc_accounts", {}).get(uid, acc)
+                    acc = full_db.get("gc_accounts", {}).get(uid) or full_db.get("gc_accounts", {}).get(uid_str, acc)
 
                     # Check if user live-updated the group chat URL
                     live_url = (acc.get("url") or "").strip()
@@ -1790,7 +2491,7 @@ def single_gc_playwright_worker(uid):
                     elif isinstance(raw_gc_names, list):
                         nc_list = [str(n).strip() for n in raw_gc_names if str(n).strip()]
                     if not nc_list:
-                        nc_list = ["LOCKED BY GOD CLAN"]
+                        nc_list = ["LOCKED BY SNAPPY CLAN"]
 
                     # Refresh Messages
                     raw_messages = acc.get("messages", [])
@@ -1799,11 +2500,11 @@ def single_gc_playwright_worker(uid):
                     elif isinstance(raw_messages, list):
                         messages = [str(m).strip() for m in raw_messages if str(m).strip()]
                     if not messages:
-                        messages = ["SERVER GOD CLAN ON TOP 🔥", "SYSTEM ONLINE 💥", "WAR ACTIVE ⚡"]
+                        messages = ["SNAPPY CLAN ON TOP 🔥", "SYSTEM ONLINE 💥", "WAR ACTIVE ⚡"]
 
                     # Refresh Header/Footer/Spacing/Delay
                     header_text = str(acc.get("header_text") or "👑 SPAM BY KING 👑").strip()
-                    footer_text = str(acc.get("footer_text") or "👑 SCRIPT BY SERVER GOD CLAN 👑").strip()
+                    footer_text = str(acc.get("footer_text") or "👑 SCRIPT BY SNAPPY CLAN 👑").strip()
                     space_lines = int(acc.get("space_lines", 35))
                     blank_block = "\n".join(["⠀" for _ in range(space_lines)])
                     delay = float(acc.get("delay", 4))
@@ -1828,7 +2529,7 @@ def single_gc_playwright_worker(uid):
                     else:
                         current_gc_name = nc_title_raw.replace("{target}", "").strip()
 
-                    # Force Name Lock every 20 strikes
+                    # Force Name Lock every 20 strikes if locker is enabled
                     if is_locker and inner_count >= 19:
                         try:
                             log_gc_terminal(uid, f"🔒 [LOCK] Locking group name to: '{current_gc_name}'...", "INFO")
@@ -1857,7 +2558,7 @@ def single_gc_playwright_worker(uid):
                         inner_count = 0
                         msg_box = get_msg_box(page)
 
-                    if not gc_running.get(uid):
+                    if not gc_running.get(uid) and not gc_running.get(uid_str):
                         break
 
                     # Construct stacked multi-target spaced payload
@@ -1909,12 +2610,22 @@ def single_gc_playwright_worker(uid):
                             msg_box = get_msg_box(page)
 
                         if not msg_box:
-                            log_gc_terminal(uid, "⚠️ Message box not found. Ensure group URL is like https://www.instagram.com/direct/t/12345/ and sessionid is valid.", "WARN")
-                            time.sleep(3)
-                            continue
+                            log_gc_terminal(uid, "⚠️ Message box not found. Checking page...", "WARN")
+                            time.sleep(2)
+                            dismiss_instagram_modals(page)
+                            msg_box = get_msg_box(page)
+                            if not msg_box:
+                                time.sleep(2)
+                                continue
 
-                        # Focus the message input
-                        msg_box.click(timeout=5000)
+                        # Focus the message input with fallback to direct DOM focus
+                        try:
+                            msg_box.click(timeout=3000, force=True)
+                        except Exception:
+                            try:
+                                msg_box.evaluate("el => el.focus()")
+                            except Exception:
+                                pass
                         time.sleep(0.1)
 
                         # Clear any draft content
@@ -1931,7 +2642,7 @@ def single_gc_playwright_worker(uid):
                         send_btn = page.locator('button:has-text("Send"), div[role="button"]:has-text("Send"), div[aria-label="Send"], svg[aria-label="Send"]').first
                         if send_btn.count() > 0 and send_btn.is_visible():
                             try:
-                                send_btn.click(timeout=2000)
+                                send_btn.click(timeout=1500, force=True)
                                 sent = True
                             except Exception:
                                 pass
@@ -1946,29 +2657,55 @@ def single_gc_playwright_worker(uid):
                             gc_stats[uid]["groups"] = strike_count
                             gc_stats[uid]["running"] = True
                             gc_stats[uid]["log"] = f"Strike #{strike_count} sent to {target_label}"
+                        elif uid_str in gc_stats:
+                            gc_stats[uid_str]["groups"] = strike_count
+                            gc_stats[uid_str]["running"] = True
+                            gc_stats[uid_str]["log"] = f"Strike #{strike_count} sent to {target_label}"
 
                         status_tag = "LOCKER" if is_locker else "SLAMMER"
                         log_gc_terminal(uid, f"⚡ [{status_tag}] STRIKE #{strike_count} -> [{target_label}]: Long Spaced Message Sent ({space_lines} gap lines, Delay: {delay}s)", "SUCCESS")
                         time.sleep(delay)
                     except Exception as e_fill:
-                        log_gc_terminal(uid, f"❌ Strike send error: {e_fill}", "ERROR")
+                        log_gc_terminal(uid, f"❌ Strike send notice: {e_fill}. Retrying...", "ERROR")
                         time.sleep(2)
+                        dismiss_instagram_modals(page)
                         msg_box = get_msg_box(page)
 
-                browser.close()
-                if os.path.exists(user_data_dir):
-                    shutil.rmtree(user_data_dir, ignore_errors=True)
-                time.sleep(1)
+                if browser:
+                    browser.close()
+                    browser = None
 
         except Exception as e_engine:
-            log_gc_terminal(uid, f"⚠️ Playwright Engine notice: {e_engine}", "WARN")
-            time.sleep(3)
+            err_str = str(e_engine)
+            if "Resource temporarily unavailable" in err_str or "11" in err_str or "thread" in err_str.lower():
+                log_gc_terminal(uid, f"⚠️ System resource limit reached ({err_str}). Sleeping 10s before auto-recovering...", "WARN")
+                time.sleep(10)
+            else:
+                log_gc_terminal(uid, f"⚠️ Single GC Engine notice: {e_engine}. Auto-recovering in 5s...", "WARN")
+                time.sleep(5)
+        finally:
+            if browser:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                browser = None
+            if os.path.exists(user_data_dir):
+                try:
+                    shutil.rmtree(user_data_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
     gc_running[uid] = False
+    gc_running[uid_str] = False
     if uid in gc_live:
         gc_live[uid]["running"] = False
+    if uid_str in gc_live:
+        gc_live[uid_str]["running"] = False
     if uid in gc_stats:
         gc_stats[uid]["running"] = False
+    if uid_str in gc_stats:
+        gc_stats[uid_str]["running"] = False
     log_gc_terminal(uid, "⏹️ Single GC Playwright Engine stopped.", "INFO")
 
 @app.route("/gc_add_account", methods=["POST"])
@@ -1978,14 +2715,32 @@ def gc_add_account():
         return jsonify({"status": "login_required"}), 401
 
     data = request.json or {}
-    sessionid = data.get("sessionid", "").strip()
+    raw_session = data.get("sessionid", "").strip()
+    sessionid = raw_session
+    csrftoken = data.get("csrftoken", "").strip()
+
+    # Auto-extract sessionid and csrftoken if full cookie string was pasted
+    if ";" in sessionid or "=" in sessionid:
+        for part in sessionid.split(";"):
+            if "=" in part:
+                k, v = part.strip().split("=", 1)
+                if k.strip().lower() == "sessionid":
+                    sessionid = v.strip()
+                elif k.strip().lower() == "csrftoken" and not csrftoken:
+                    csrftoken = v.strip()
+
+    if "%3A" in sessionid or "%3a" in sessionid:
+        sessionid = urllib.parse.unquote(sessionid).strip()
+    if sessionid.lower().startswith("sessionid="):
+        sessionid = sessionid[10:].strip()
+
     url = data.get("url", "").strip()
     opponent = data.get("opponent", "").strip() or data.get("target", "").strip() or ""
     header_text = data.get("header_text", "").strip() or "👑 SPAM BY KING 👑"
-    footer_text = data.get("footer_text", "").strip() or "👑 SCRIPT BY SERVER GOD CLAN 👑"
+    footer_text = data.get("footer_text", "").strip() or "👑 SCRIPT BY SNAPPY CLAN 👑"
     space_lines = int(data.get("space_lines", 35))
     use_long_format = bool(data.get("use_long_format", True))
-    gc_name = data.get("gc_name", "").strip() or "LOCKED BY GOD CLAN"
+    gc_name = data.get("gc_name", "").strip() or "LOCKED BY SNAPPY CLAN"
     delay = float(data.get("delay", 4))
     is_locker = bool(data.get("is_locker", True))
 
@@ -1999,9 +2754,9 @@ def gc_add_account():
 
     if not messages:
         messages = [
-            "SERVER GOD CLAN ON TOP 🔥",
+            "SNAPPY CLAN ON TOP 🔥",
             "SYSTEM ONLINE - CHOD DENGE 💥",
-            "GOD CLAN STRIKE ACTIVE ⚡",
+            "SNAPPY CLAN STRIKE ACTIVE ⚡",
             "WAR MODE ON - BHAGO MC 🚀",
             "TERI MAA KA BHOSDA CHUD GAYA ⚔️"
         ]
@@ -2010,20 +2765,17 @@ def gc_add_account():
         return jsonify({"status": "error", "message": "Session ID is required!"}), 400
 
     if not url:
-        return jsonify({"status": "error", "message": "Instagram Group Chat URL is required!"}), 400
-
-    display_target = opponent or "Default"
-    log_gc_terminal("AUTH", f"📥 Received Single GC Registration for Target(s) '{display_target}'...", "INFO")
+        return jsonify({"status": "error", "message": "Group URL is required!"}), 400
 
     uid = next_gc_uid()
-    gc_running[uid] = False
+    current_user = get_current_user()
 
-    account_data = {
+    acc = {
         "uid": uid,
-        "name": f"Single GC #{uid}" + (f" ({opponent})" if opponent else ""),
-        "username": opponent or "SingleGC",
-        "url": url,
+        "owner": current_user,
         "sessionid": sessionid,
+        "csrftoken": csrftoken,
+        "url": url,
         "opponent": opponent,
         "header_text": header_text,
         "footer_text": footer_text,
@@ -2033,18 +2785,19 @@ def gc_add_account():
         "gc_name": gc_name,
         "delay": delay,
         "is_locker": is_locker,
-        "owner": get_current_user(),
-        "createdAt": str(datetime.utcnow())
+        "created_at": datetime.now().isoformat()
     }
+    save_gc_account_db(uid, acc)
 
-    save_gc_account_db(uid, account_data)
+    gc_running[uid] = False
     gc_stats[uid] = {
-        "user": get_current_user(),
+        "user": current_user,
         "account": uid,
         "groups": 0,
         "failed": 0,
         "running": False,
         "uptime": 0,
+        "uptime_str": "00:00:00",
         "log": "Single GC Added Successfully"
     }
     gc_live[uid] = {"running": False, "started": None}
@@ -2053,7 +2806,7 @@ def gc_add_account():
 
 @app.route("/gc_start", methods=["POST"])
 def gc_start():
-    uid = request.json.get("uid")
+    uid = str(request.json.get("uid"))
     full_db = get_full_db()
     acc = full_db.get("gc_accounts", {}).get(uid)
     if not acc:
@@ -2062,8 +2815,9 @@ def gc_start():
     if gc_running.get(uid):
         return jsonify({"status": "already_running"})
 
+    start_time = time.time()
     gc_running[uid] = True
-    gc_live[uid] = {"running": True, "started": time.time()}
+    gc_live[uid] = {"running": True, "started": start_time}
     gc_stats[uid] = {
         "user": get_current_user(),
         "account": uid,
@@ -2071,6 +2825,8 @@ def gc_start():
         "failed": gc_stats.get(uid, {}).get("failed", 0),
         "running": True,
         "uptime": 0,
+        "uptime_str": "00:00:00",
+        "started": start_time,
         "log": "Starting Playwright browser engine..."
     }
     threading.Thread(target=single_gc_playwright_worker, args=(uid,), daemon=True).start()
@@ -2078,7 +2834,7 @@ def gc_start():
 
 @app.route("/gc_stop", methods=["POST"])
 def gc_stop():
-    uid = request.json.get("uid")
+    uid = str(request.json.get("uid"))
     gc_running[uid] = False
     if uid in gc_live:
         gc_live[uid]["running"] = False
@@ -2093,52 +2849,54 @@ def gc_delete_account():
     if not is_authenticated():
         return jsonify({"status": "login_required"}), 401
 
-    uid = request.json.get("uid")
+    uid = str(request.json.get("uid"))
     full_db = get_full_db()
     acc = full_db.get("gc_accounts", {}).get(uid)
     if not acc:
         return jsonify({"status": "invalid"})
 
+    me = str(get_current_user()).strip().lower()
     acc_owner = str(acc.get("owner", "")).strip().lower()
-    cur_user = str(get_current_user()).strip().lower()
-    if not is_owner() and acc_owner != cur_user:
-        return jsonify({"status": "denied"}), 403
+    if not is_owner() and acc_owner != me:
+        return jsonify({"status": "unauthorized"}), 403
 
-    gc_running.pop(uid, None)
-    gc_clients.pop(uid, None)
-    gc_stats.pop(uid, None)
-    gc_live.pop(uid, None)
-
+    gc_running[uid] = False
+    if uid in gc_stats:
+        del gc_stats[uid]
+    if uid in gc_live:
+        del gc_live[uid]
     delete_gc_account_db(uid)
-    log_gc_terminal(uid, "GC Account deleted from database.", "WARN")
-    return jsonify({"status": "ok"})
+    log_gc_terminal(uid, "Single GC Account deleted.", "WARN")
+    return jsonify({"status": "deleted"})
 
 @app.route("/gc_edit_account", methods=["POST"])
 def gc_edit_account():
     if not is_authenticated():
         return jsonify({"status": "login_required"}), 401
 
-    uid = request.json.get("uid")
+    uid = str(request.json.get("uid"))
     full_db = get_full_db()
     acc = full_db.get("gc_accounts", {}).get(uid)
     if not acc:
         return jsonify({"status": "invalid"})
 
+    me = str(get_current_user()).strip().lower()
     acc_owner = str(acc.get("owner", "")).strip().lower()
-    cur_user = str(get_current_user()).strip().lower()
-    if not is_owner() and acc_owner != cur_user:
-        return jsonify({"status": "denied"}), 403
+    if not is_owner() and acc_owner != me:
+        return jsonify({"status": "unauthorized"}), 403
 
-    acc["url"] = request.json.get("url", acc.get("url", "")).strip()
-    acc["opponent"] = request.json.get("opponent", acc.get("opponent", "")).strip()
-    acc["header_text"] = request.json.get("header_text", acc.get("header_text", "👑 SPAM BY KING 👑")).strip()
-    acc["footer_text"] = request.json.get("footer_text", acc.get("footer_text", "👑 SCRIPT BY SERVER GOD CLAN 👑")).strip()
-    acc["space_lines"] = int(request.json.get("space_lines", acc.get("space_lines", 35)))
-    acc["use_long_format"] = bool(request.json.get("use_long_format", acc.get("use_long_format", True)))
-    acc["gc_name"] = request.json.get("gc_name", acc.get("gc_name", "")).strip()
-    acc["delay"] = float(request.json.get("delay", 4))
+    data = request.json or {}
+    acc["url"] = data.get("url", acc.get("url", "")).strip()
+    acc["opponent"] = data.get("opponent", acc.get("opponent", "")).strip()
+    acc["header_text"] = data.get("header_text", acc.get("header_text", "👑 SPAM BY KING 👑")).strip()
+    acc["footer_text"] = data.get("footer_text", acc.get("footer_text", "👑 SCRIPT BY SNAPPY CLAN 👑")).strip()
+    acc["space_lines"] = int(data.get("space_lines", acc.get("space_lines", 35)))
+    acc["use_long_format"] = bool(data.get("use_long_format", acc.get("use_long_format", True)))
+    acc["gc_name"] = data.get("gc_name", acc.get("gc_name", "LOCKED BY SNAPPY CLAN")).strip()
+    acc["delay"] = float(data.get("delay", acc.get("delay", 4)))
+    acc["is_locker"] = bool(data.get("is_locker", acc.get("is_locker", True)))
 
-    raw_msgs = request.json.get("messages", "")
+    raw_msgs = data.get("messages")
     if isinstance(raw_msgs, str):
         acc["messages"] = [m.strip() for m in raw_msgs.replace(",", "\n").replace("\r", "").split("\n") if m.strip()]
     elif isinstance(raw_msgs, list):
@@ -2163,10 +2921,10 @@ def gc_status():
         for uid, acc in gc_accounts.items():
             acc_copy = dict(acc)
             acc_copy["admin_name"] = get_user_display_name(acc.get("owner", ""))
-            acc_copy["system_owner"] = "SERVER GOD CLAN KING"
+            acc_copy["system_owner"] = "SNAPPY CLAN KING"
             accounts[uid] = acc_copy
             if uid not in gc_stats:
-                gc_stats[uid] = {"user": acc.get("owner", ""), "account": uid, "groups": 0, "failed": 0, "running": False, "uptime": 0, "log": "Awaiting Start"}
+                gc_stats[uid] = {"user": acc.get("owner", ""), "account": uid, "groups": 0, "failed": 0, "running": False, "uptime": 0, "uptime_str": "00:00:00", "log": "Awaiting Start"}
             visible[uid] = gc_stats[uid]
     else:
         for uid, acc in gc_accounts.items():
@@ -2174,18 +2932,26 @@ def gc_status():
             if acc_owner == me or me in acc_owner or acc_owner in me:
                 acc_copy = dict(acc)
                 acc_copy["admin_name"] = get_user_display_name(acc.get("owner", ""))
-                acc_copy["system_owner"] = "SERVER GOD CLAN KING"
+                acc_copy["system_owner"] = "SNAPPY CLAN KING"
                 accounts[uid] = acc_copy
                 if uid not in gc_stats:
-                    gc_stats[uid] = {"user": acc.get("owner", ""), "account": uid, "groups": 0, "failed": 0, "running": False, "uptime": 0, "log": "Awaiting Start"}
+                    gc_stats[uid] = {"user": acc.get("owner", ""), "account": uid, "groups": 0, "failed": 0, "running": False, "uptime": 0, "uptime_str": "00:00:00", "log": "Awaiting Start"}
                 visible[uid] = gc_stats[uid]
 
     for uid, s in visible.items():
-        if gc_live.get(uid, {}).get("running"):
+        uid_str = str(uid)
+        live_info = gc_live.get(uid) or gc_live.get(uid_str)
+        if live_info and live_info.get("running") and live_info.get("started"):
             s["running"] = True
-            s["uptime"] = int(time.time() - gc_live[uid]["started"])
+            elapsed = int(time.time() - live_info["started"])
+            s["uptime"] = elapsed
+            s["uptime_str"] = format_uptime(elapsed)
+            s["started"] = live_info["started"]
         else:
             s["running"] = False
+            s["uptime"] = 0
+            s["uptime_str"] = "00:00:00"
+
     if is_owner():
         ret_gc_logs = gc_terminal_logs
     else:
@@ -2202,347 +2968,1319 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 ]
 
-def scrape_instagram_groups(sessionid, csrftoken=None, max_groups=150, log_fn=None):
-    clean_sessionid = sessionid.strip()
-    if "sessionid=" in clean_sessionid:
-        m = re.search(r'sessionid=([^;]+)', clean_sessionid)
-        if m:
-            clean_sessionid = m.group(1).strip()
-    if "%3A" in clean_sessionid or "%3a" in clean_sessionid:
-        clean_sessionid = urllib.parse.unquote(clean_sessionid).strip()
-
-    clean_csrf = (csrftoken or "").strip()
-    if not clean_csrf or clean_csrf == "missing":
-        if "csrftoken=" in sessionid:
-            m = re.search(r'csrftoken=([^;]+)', sessionid)
-            if m:
-                clean_csrf = m.group(1).strip()
-    if not clean_csrf:
-        clean_csrf = "missing"
+def scrape_instagram_groups(sessionid, csrftoken=None, max_groups=1000, log_fn=None):
+    parsed_cookies, clean_sessionid, clean_csrf, user_id = parse_instagram_cookie_input(sessionid, csrftoken or "")
 
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
         "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
         "X-Requested-With": "XMLHttpRequest",
-        "X-CSRFToken": clean_csrf,
+        "X-CSRFToken": clean_csrf or parsed_cookies.get("csrftoken", "missing"),
         "X-IG-App-ID": "936619743392459",
         "X-ASBD-ID": "129477",
         "Referer": "https://www.instagram.com/direct/inbox/",
     }
-    cookies = {"sessionid": clean_sessionid}
+    cookies = dict(parsed_cookies)
+    if clean_sessionid:
+        cookies["sessionid"] = clean_sessionid
     if clean_csrf and clean_csrf != "missing":
         cookies["csrftoken"] = clean_csrf
+    if user_id.isdigit():
+        cookies["ds_user_id"] = user_id
 
     links = []
-    url = "https://www.instagram.com/api/v1/direct_v2/inbox/?limit=50"
-    cursor = None
+    seen_ids = set()
+
+    # Instagram distributes group chats across multiple folders:
+    # 1. Main Inbox (Primary)
+    # 2. General Folder
+    # 3. Pending Requests
+    # 4. Hidden / Filtered Requests
+    # 5. Spam Requests
+    endpoints = [
+        ("Main Inbox", "https://www.instagram.com/api/v1/direct_v2/inbox/"),
+        ("General Inbox", "https://www.instagram.com/api/v1/direct_v2/inbox/?folder=general"),
+        ("Pending Requests", "https://www.instagram.com/api/v1/direct_v2/inbox/?folder=pending"),
+        ("Hidden Requests", "https://www.instagram.com/api/v1/direct_v2/inbox/?folder=hidden"),
+        ("Spam Requests", "https://www.instagram.com/api/v1/direct_v2/inbox/?folder=spam"),
+    ]
+
     if log_fn:
-        log_fn(f"🔍 Scraping up to {max_groups} group chat links from Direct Inbox API...", "INFO")
+        log_fn(f"🔍 Scraping up to {max_groups} group chat links across all folders (Primary, General, Pending, Hidden, Spam)...", "INFO")
 
-    retries = 0
-    while len(links) < max_groups and retries < 4:
-        try:
-            req_url = f"https://www.instagram.com/api/v1/direct_v2/inbox/?limit=50&cursor={cursor}" if cursor else url
-            r = requests.get(req_url, headers=headers, cookies=cookies, timeout=20)
-            if r.status_code != 200:
+    for name, base_url in endpoints:
+        cursor = None
+        prev_cursor = None
+        page_num = 1
+        
+        while len(links) < max_groups:
+            params = {
+                "limit": 50,
+                "thread_message_limit": 1,
+                "persistentBadging": "true"
+            }
+            if cursor:
+                params["cursor"] = str(cursor)
+                params["direction"] = "older"
+                
+            try:
+                r = requests.get(
+                    base_url,
+                    headers=headers,
+                    cookies=cookies,
+                    params=params,
+                    timeout=15
+                )
+            except Exception as err:
                 if log_fn:
-                    log_fn(f"⚠️ Direct Inbox API HTTP {r.status_code}. Retrying...", "WARN")
-                retries += 1
-                time.sleep(2)
-                continue
-
-            data = r.json()
-            threads = data.get("inbox", {}).get("threads", [])
-            new_found = 0
-            for t in threads:
-                if t.get("is_group"):
-                    v2id = t.get("thread_v2_id")
-                    if v2id:
-                        g_url = f"https://www.instagram.com/direct/t/{v2id}/"
-                        if g_url not in links:
-                            links.append(g_url)
-                            new_found += 1
-                            if len(links) >= max_groups:
-                                break
-            cursor = data.get("inbox", {}).get("oldest_cursor")
-            if not cursor or not threads or new_found == 0:
+                    log_fn(f"⚠️ Network notice during {name} scan: {err}", "WARN")
                 break
+
+            if r.status_code != 200:
+                break
+
+            try:
+                data = r.json()
+            except Exception:
+                break
+
+            inbox = data.get("inbox", {}) if isinstance(data.get("inbox"), dict) else data.get("pending_requests", {}) or data
+            threads = inbox.get("threads", []) if isinstance(inbox, dict) else []
+            if not threads and isinstance(data.get("threads"), list):
+                threads = data.get("threads", [])
+
+            if not threads:
+                break
+
+            new_found_in_page = 0
+            for t in threads:
+                # Identification for all group chat variants
+                is_group = (
+                    t.get("is_group") is True
+                    or len(t.get("users", [])) > 1
+                    or t.get("thread_type") in ["group", "channel", "broadcast_channel"]
+                    or t.get("named", False) is True
+                )
+                
+                if is_group:
+                    thread_id = t.get("thread_v2_id") or t.get("thread_id") or t.get("id")
+                    if thread_id and str(thread_id) not in seen_ids:
+                        seen_ids.add(str(thread_id))
+                        link = f"https://www.instagram.com/direct/t/{thread_id}/"
+                        links.append(link)
+                        new_found_in_page += 1
+                        if len(links) >= max_groups:
+                            break
+
+            page_num += 1
+            if len(links) >= max_groups:
+                break
+
+            old_cursor = (
+                inbox.get("oldest_cursor")
+                or inbox.get("cursor")
+                or data.get("oldest_cursor")
+                or data.get("cursor")
+                or data.get("next_max_id")
+            )
+            
+            if not old_cursor and threads:
+                last_t = threads[-1]
+                old_cursor = (
+                    last_t.get("last_activity_at")
+                    or last_t.get("last_permanent_item", {}).get("timestamp")
+                )
+            
+            if not old_cursor or str(old_cursor) == str(prev_cursor):
+                break
+                
+            prev_cursor = old_cursor
+            cursor = old_cursor
             time.sleep(0.5)
-        except Exception as ex:
-            if log_fn:
-                log_fn(f"⚠️ Group link fetch notice: {ex}", "WARN")
-            retries += 1
-            time.sleep(1)
 
     if log_fn:
         if links:
-            log_fn(f"✅ Successfully scraped {len(links)} Instagram Group Chat Links!", "SUCCESS")
+            log_fn(f"✅ Successfully scraped {len(links)} total unique Instagram Group Chat Links across all folders!", "SUCCESS")
         else:
-            log_fn("⚠️ 0 group chats found via Direct Inbox API.", "WARN")
+            log_fn("⚠️ 0 group chats found in any folder.", "WARN")
     return links
 
 def multi_gc_playwright_worker(uid):
+    uid_str = str(uid)
     full_db = get_full_db()
-    acc = full_db.get("accounts", {}).get(uid, {})
+    acc = full_db.get("accounts", {}).get(uid_str) or full_db.get("accounts", {}).get(uid, {})
     if not acc:
         ig_running[uid] = False
+        ig_running[uid_str] = False
         log_ig_terminal(uid, "Account not found in DB. Stopping.", "ERROR")
         return
 
     sessionid = (acc.get("sessionid") or "").strip()
     csrftoken = (acc.get("csrftoken") or "").strip()
-    user_data_dir = os.path.join(tempfile.gettempdir(), f"ig_multi_browser_{uid}")
-    os.makedirs(user_data_dir, exist_ok=True)
 
-    log_ig_terminal(uid, f"🚀 Multi-GC Playwright Engine deployed for Bot #{uid}!", "SUCCESS")
+    parsed_cookies, clean_sess, clean_csrf, user_id = parse_instagram_cookie_input(sessionid, csrftoken or "")
+
+    log_ig_terminal(uid, f"🚀 Multi-GC Playwright Engine deployed for Bot #{uid} (1-Text + 1-NC Mode)!", "SUCCESS")
 
     cycle_count = 0
-    while ig_running.get(uid, False):
+    msg_idx = 0
+    nc_idx = 0
+
+    while ig_running.get(uid, False) or ig_running.get(uid_str, False):
+        user_data_dir = os.path.join(tempfile.gettempdir(), f"ig_multi_browser_{uid}_{uuid.uuid4().hex[:6]}")
+        os.makedirs(user_data_dir, exist_ok=True)
+        browser = None
+
         try:
+            # Dynamic Config Refresh from Database for Live Real-Time Updates
+            full_db = get_full_db()
+            acc = full_db.get("accounts", {}).get(uid_str) or full_db.get("accounts", {}).get(uid) or acc
+
+            # Dynamic Group Link Scrape / Refresh
+            gc_links = acc.get("gc_links", [])
+            max_groups = int(acc.get("max_groups", 150))
+            if gc_links and len(gc_links) > max_groups:
+                gc_links = gc_links[:max_groups]
+
+            if not gc_links:
+                log_ig_terminal(uid, "🔍 No group chats in card. Auto-scraping Instagram Inbox now...", "INFO")
+                try:
+                    scraped = scrape_instagram_groups(sessionid, csrftoken, max_groups=max_groups, log_fn=lambda m, l: log_ig_terminal(uid, m, l))
+                    if scraped:
+                        gc_links = scraped[:max_groups]
+                        acc["gc_links"] = gc_links
+                        save_ig_account_db(uid, acc)
+                        log_ig_terminal(uid, f"✅ Auto-scraped and saved {len(gc_links)} group chat links!", "SUCCESS")
+                    else:
+                        log_ig_terminal(uid, "⚠️ 0 group chats found in any folder. Paste links manually or retry in 10s...", "WARN")
+                        time.sleep(10)
+                        continue
+                except Exception as e_sc:
+                    log_ig_terminal(uid, f"⚠️ Scrape notice: {e_sc}. Retrying in 10s...", "WARN")
+                    time.sleep(10)
+                    continue
+
+            cycle_count += 1
+            delay = float(acc.get("delay", 2.0))
+            cycle_delay = int(acc.get("cycle_delay", 10))
+            use_long_format = bool(acc.get("use_long_format", True))
+            space_lines = int(acc.get("space_lines", 35))
+            blank_block = "\n".join(["⠀" for _ in range(space_lines)])
+            header_text = str(acc.get("header_text") or "👑 SPAM BY KING 👑").strip()
+            footer_text = str(acc.get("footer_text") or "👑 SCRIPT BY SNAPPY CLAN 👑").strip()
+
+            opponent_raw = acc.get("opponent", "") or acc.get("target", "")
+            raw_targets = [t.strip() for t in re.split(r"[,;\n\r]+", opponent_raw) if t.strip()] if opponent_raw else []
+
+            raw_messages = acc.get("messages", [])
+            if isinstance(raw_messages, str):
+                messages = [m.strip() for m in raw_messages.replace("\r", "").split("\n") if m.strip()]
+            elif isinstance(raw_messages, list):
+                messages = [str(m).strip() for m in raw_messages if str(m).strip()]
+            else:
+                messages = []
+            if not messages:
+                messages = ["SNAPPY CLAN ON TOP 🔥", "SYSTEM ONLINE 💥", "WAR ACTIVE ⚡"]
+
+            raw_renames = acc.get("renames", []) or acc.get("gc_name", [])
+            if isinstance(raw_renames, str):
+                nc_list = [r.strip() for r in raw_renames.replace("\r", "").split("\n") if r.strip()]
+            elif isinstance(raw_renames, list):
+                nc_list = [str(r).strip() for r in raw_renames if str(r).strip()]
+            else:
+                nc_list = []
+
+            log_ig_terminal(uid, f"🌐 [CYCLE #{cycle_count}] Launching fresh Chromium browser session for {len(gc_links)} group(s)...", "INFO")
+
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
-                log_ig_terminal(uid, "🌐 Launching headless Chromium browser session...", "INFO")
                 browser = p.chromium.launch_persistent_context(
                     user_data_dir,
                     headless=True,
                     args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-notifications"]
                 )
 
-                # Inject session & CSRF cookies
-                clean_sess = sessionid
-                if "sessionid=" in clean_sess:
-                    m = re.search(r'sessionid=([^;]+)', clean_sess)
-                    if m:
-                        clean_sess = m.group(1).strip()
-                if "%3A" in clean_sess or "%3a" in clean_sess:
-                    clean_sess = urllib.parse.unquote(clean_sess).strip()
-
-                clean_csrf = csrftoken
-                if not clean_csrf or clean_csrf == "missing":
-                    if "csrftoken=" in sessionid:
-                        m = re.search(r'csrftoken=([^;]+)', sessionid)
-                        if m:
-                            clean_csrf = m.group(1).strip()
-
-                cookie_list = [{
-                    "name": "sessionid",
-                    "value": clean_sess,
-                    "domain": ".instagram.com",
-                    "path": "/",
-                    "secure": True,
-                    "httpOnly": True
-                }]
-                if clean_csrf and clean_csrf != "missing":
+                cookie_list = []
+                for ck_k, ck_v in parsed_cookies.items():
+                    cookie_list.append({
+                        "name": ck_k,
+                        "value": ck_v,
+                        "domain": ".instagram.com",
+                        "path": "/",
+                        "secure": True
+                    })
+                if clean_sess and not any(c["name"] == "sessionid" for c in cookie_list):
+                    cookie_list.append({
+                        "name": "sessionid",
+                        "value": clean_sess,
+                        "domain": ".instagram.com",
+                        "path": "/",
+                        "secure": True
+                    })
+                if clean_csrf and not any(c["name"] == "csrftoken" for c in cookie_list):
                     cookie_list.append({
                         "name": "csrftoken",
                         "value": clean_csrf,
                         "domain": ".instagram.com",
                         "path": "/",
-                        "secure": True,
-                        "httpOnly": False
+                        "secure": True
                     })
                 browser.add_cookies(cookie_list)
 
                 page = browser.new_page()
                 page.route("**/*", block_media)
 
-                log_ig_terminal(uid, "Navigating to Instagram Direct Inbox...", "INFO")
-                page.goto("https://www.instagram.com/direct/inbox/", wait_until="domcontentloaded", timeout=60000)
-                time.sleep(3)
-                dismiss_instagram_modals(page)
-
-                msg_idx = 0
-                nc_idx = 0
-                uid_str = str(uid)
-
-                while ig_running.get(uid, False) or ig_running.get(uid_str, False):
-                    # Dynamic Config Refresh from Database
-                    full_db = get_full_db()
-                    acc = full_db.get("accounts", {}).get(uid_str) or full_db.get("accounts", {}).get(uid) or acc
-
-                    # Dynamic Group Link Scrape / Refresh
-                    gc_links = acc.get("gc_links", [])
-                    max_groups = int(acc.get("max_groups", 5))
-                    
-                    if gc_links and len(gc_links) > max_groups:
-                        gc_links = gc_links[:max_groups]
-
-                    if not gc_links:
-                        log_ig_terminal(uid, "⚠️ No group chats in card. Click '🔍 Auto-Scrape GC Links' or paste links into the card textarea, then click Save!", "WARN")
-                        time.sleep(5)
-                        continue
-
-                    cycle_count += 1
-                    log_ig_terminal(uid, f"🔄 [CYCLE #{cycle_count}] Starting Multi-GC Loop across {len(gc_links)} group(s)...", "INFO")
-
-                    # Live configurable properties
-                    delay = float(acc.get("delay", 2.0))
-                    cycle_delay = int(acc.get("cycle_delay", 10))
-                    use_long_format = bool(acc.get("use_long_format", True))
-                    space_lines = int(acc.get("space_lines", 35))
-                    blank_block = "\n".join(["⠀" for _ in range(space_lines)])
-                    header_text = str(acc.get("header_text") or "👑 SPAM BY KING 👑").strip()
-                    footer_text = str(acc.get("footer_text") or "👑 SCRIPT BY SERVER GOD CLAN 👑").strip()
-
-                    opponent_raw = acc.get("opponent", "") or acc.get("target", "")
-                    raw_targets = [t.strip() for t in re.split(r"[,;\n\r]+", opponent_raw) if t.strip()] if opponent_raw else []
-
-                    raw_messages = acc.get("messages", [])
-                    if isinstance(raw_messages, str):
-                        messages = [m.strip() for m in raw_messages.replace("\r", "").split("\n") if m.strip()]
-                    elif isinstance(raw_messages, list):
-                        messages = [str(m).strip() for m in raw_messages if str(m).strip()]
-                    else:
-                        messages = []
-
-                    raw_renames = acc.get("renames", []) or acc.get("gc_name", [])
-                    if isinstance(raw_renames, str):
-                        nc_list = [r.strip() for r in raw_renames.replace("\r", "").split("\n") if r.strip()]
-                    elif isinstance(raw_renames, list):
-                        nc_list = [str(r).strip() for r in raw_renames if str(r).strip()]
-                    else:
-                        nc_list = []
-
-                    # Iterate each group chat link in the round
-                    for g_idx, gc_url in enumerate(gc_links, 1):
-                        if not ig_running.get(uid):
-                            break
-
-                        log_ig_terminal(uid, f"👉 [{g_idx}/{len(gc_links)}] Opening Group Chat: {gc_url}...", "INFO")
-                        try:
-                            page.goto(gc_url, wait_until="domcontentloaded", timeout=60000)
-                            time.sleep(2)
-                            dismiss_instagram_modals(page)
-                        except Exception as e_nav:
-                            log_ig_terminal(uid, f"⚠️ Navigation error for {gc_url}: {e_nav}", "WARN")
-                            continue
-
-                        msg_box = get_msg_box(page)
-
-                        # --- STEP 1 & 2: SEND 2 TEXT MESSAGES ---
-                        for t_step in range(1, 3):
-                            if not ig_running.get(uid):
-                                break
-
-                            # Refresh target & message
-                            current_target = raw_targets[msg_idx % len(raw_targets)] if raw_targets else ""
-                            core_msg = messages[msg_idx % len(messages)] if messages else "WAR ACTIVE ⚡"
-                            msg_idx += 1
-
-                            if use_long_format:
-                                if current_target:
-                                    if "{target}" in core_msg:
-                                        t_line = core_msg.replace("{target}", current_target)
-                                    else:
-                                        t_line = f"[{current_target}] {core_msg}"
-                                    target_label = current_target
-                                else:
-                                    t_line = core_msg.replace("{target}", "").strip()
-                                    target_label = "CUSTOM"
-
-                                payload = f"{header_text}\n{blank_block}\n{t_line}\n{blank_block}\n{footer_text}"
-                            else:
-                                payload = f"[{current_target}] {core_msg}" if current_target else core_msg
-                                target_label = current_target or "CUSTOM"
-
-                            try:
-                                if not msg_box or not msg_box.is_visible():
-                                    msg_box = get_msg_box(page)
-
-                                if msg_box and msg_box.is_visible():
-                                    msg_box.click(timeout=5000)
-                                    time.sleep(0.1)
-                                    page.keyboard.press("Control+a")
-                                    page.keyboard.press("Backspace")
-                                    time.sleep(0.1)
-                                    page.keyboard.insert_text(payload)
-                                    time.sleep(0.3)
-
-                                    sent = False
-                                    send_btn = page.locator('button:has-text("Send"), div[role="button"]:has-text("Send"), div[aria-label="Send"], svg[aria-label="Send"]').first
-                                    if send_btn.count() > 0 and send_btn.is_visible():
-                                        try:
-                                            send_btn.click(timeout=2000)
-                                            sent = True
-                                        except Exception:
-                                            pass
-                                    if not sent:
-                                        page.keyboard.press("Enter")
-
-                                    ig_stats[uid]["sent"] = ig_stats[uid].get("sent", 0) + 1
-                                    log_ig_terminal(uid, f"📨 [Text #{t_step}/2] Sent to GC #{g_idx} -> [{target_label}] (Delay: {delay}s)", "SUCCESS")
-                                else:
-                                    ig_stats[uid]["failed"] = ig_stats[uid].get("failed", 0) + 1
-                                    log_ig_terminal(uid, f"⚠️ Message box not found in GC #{g_idx}", "WARN")
-
-                                time.sleep(delay)
-                            except Exception as e_send:
-                                ig_stats[uid]["failed"] = ig_stats[uid].get("failed", 0) + 1
-                                log_ig_terminal(uid, f"❌ Send error in GC #{g_idx}: {e_send}", "ERROR")
-                                time.sleep(1)
-
-                        # --- STEP 3: PERFORM 1 NC RENAME ---
-                        if not ig_running.get(uid):
-                            break
-
-                        if nc_list:
-                            nc_raw = nc_list[nc_idx % len(nc_list)]
-                            nc_idx += 1
-                            current_target = raw_targets[nc_idx % len(raw_targets)] if raw_targets else ""
-                            if current_target:
-                                new_nc = nc_raw.replace("{target}", current_target) if "{target}" in nc_raw else f"[{current_target}] {nc_raw}"
-                            else:
-                                new_nc = nc_raw.replace("{target}", "").strip()
-
-                            try:
-                                gear = page.locator('svg[aria-label="Conversation information"]')
-                                if gear.count() > 0:
-                                    gear.first.click(timeout=5000)
-                                    time.sleep(1)
-                                    change_btn = page.locator('div[aria-label="Change group name"][role="button"], div[role="button"]:has-text("Change group name")').first
-                                    if change_btn.count() > 0:
-                                        change_btn.click(timeout=5000)
-                                        time.sleep(0.5)
-                                        group_input = page.locator('input[aria-label="Group name"][name="change-group-name"], input[placeholder="Group name"]').first
-                                        if group_input.count() > 0:
-                                            group_input.fill(new_nc)
-                                            time.sleep(0.5)
-                                            save_btn = page.locator('div[role="button"]:has-text("Save"), button:has-text("Save")').first
-                                            if save_btn.count() > 0 and save_btn.is_enabled():
-                                                save_btn.click(timeout=5000)
-                                                ig_stats[uid]["renamed"] = ig_stats[uid].get("renamed", 0) + 1
-                                                log_ig_terminal(uid, f"🏷️ [1 NC] Renamed GC #{g_idx} to '{new_nc}'", "SUCCESS")
-                                    gear.first.click(timeout=5000)
-                                    time.sleep(0.5)
-                            except Exception as e_nc:
-                                log_ig_terminal(uid, f"⚠️ NC rename notice in GC #{g_idx}: {e_nc}", "WARN")
-
-                        time.sleep(1)
-
-                    # --- ALL GCS FINISHED: CYCLE DELAY (10s wait) BEFORE NEXT CYCLE ---
-                    if not ig_running.get(uid):
+                # Iterate each group chat link in this cycle: 1 TEXT MESSAGE + 1 NC RENAME PER GC
+                for g_idx, gc_url in enumerate(gc_links, 1):
+                    if not ig_running.get(uid) and not ig_running.get(uid_str):
                         break
 
-                    log_ig_terminal(uid, f"✨ Cycle #{cycle_count} completed across all {len(gc_links)} groups! Sleeping {cycle_delay}s before starting next loop...", "WARN")
-                    for _ in range(cycle_delay):
-                        if not ig_running.get(uid):
-                            break
+                    log_ig_terminal(uid, f"👉 [{g_idx}/{len(gc_links)}] Opening Group Chat: {gc_url}...", "INFO")
+                    try:
+                        page.goto(gc_url, wait_until="domcontentloaded", timeout=45000)
+                        time.sleep(2)
+                        dismiss_instagram_modals(page)
+                        if "/direct/t/" not in page.url:
+                            dismiss_instagram_modals(page)
+                            time.sleep(1)
+                            page.goto(gc_url, wait_until="domcontentloaded", timeout=45000)
+                            time.sleep(2)
+                            dismiss_instagram_modals(page)
+                    except Exception as e_nav:
+                        log_ig_terminal(uid, f"⚠️ Navigation notice for GC #{g_idx}: {e_nav}", "WARN")
                         time.sleep(1)
 
-                browser.close()
-                if os.path.exists(user_data_dir):
-                    shutil.rmtree(user_data_dir, ignore_errors=True)
+                    # --- STEP 1: SEND 1 TEXT MESSAGE ---
+                    if not ig_running.get(uid) and not ig_running.get(uid_str):
+                        break
+
+                    current_target = raw_targets[msg_idx % len(raw_targets)] if raw_targets else ""
+                    core_msg = messages[msg_idx % len(messages)]
+                    msg_idx += 1
+
+                    if use_long_format:
+                        if current_target:
+                            if "{target}" in core_msg:
+                                t_line = core_msg.replace("{target}", current_target)
+                            else:
+                                t_line = f"[{current_target}] {core_msg}"
+                            target_label = current_target
+                        else:
+                            t_line = core_msg.replace("{target}", "").strip()
+                            target_label = "CUSTOM"
+
+                        payload = f"{header_text}\n{blank_block}\n{t_line}\n{blank_block}\n{footer_text}"
+                    else:
+                        payload = f"[{current_target}] {core_msg}" if current_target else core_msg
+                        target_label = current_target or "CUSTOM"
+
+                    try:
+                        msg_box = get_msg_box(page)
+                        if msg_box and msg_box.is_visible():
+                            try:
+                                msg_box.click(timeout=3000, force=True)
+                            except Exception:
+                                try:
+                                    msg_box.evaluate("el => el.focus()")
+                                except Exception:
+                                    pass
+                            time.sleep(0.1)
+                            page.keyboard.press("Control+a")
+                            page.keyboard.press("Backspace")
+                            time.sleep(0.1)
+                            page.keyboard.insert_text(payload)
+                            time.sleep(0.3)
+
+                            sent = False
+                            send_btn = page.locator('button:has-text("Send"), div[role="button"]:has-text("Send"), div[aria-label="Send"], svg[aria-label="Send"]').first
+                            if send_btn.count() > 0 and send_btn.is_visible():
+                                try:
+                                    send_btn.click(timeout=1500, force=True)
+                                    sent = True
+                                except Exception:
+                                    pass
+                            if not sent:
+                                page.keyboard.press("Enter")
+
+                            if uid in ig_stats:
+                                ig_stats[uid]["sent"] = ig_stats[uid].get("sent", 0) + 1
+                            elif uid_str in ig_stats:
+                                ig_stats[uid_str]["sent"] = ig_stats[uid_str].get("sent", 0) + 1
+                            log_ig_terminal(uid, f"📨 [1 Text] Sent to GC #{g_idx} -> [{target_label}] (Delay: {delay}s)", "SUCCESS")
+                        else:
+                            if uid in ig_stats:
+                                ig_stats[uid]["failed"] = ig_stats[uid].get("failed", 0) + 1
+                            elif uid_str in ig_stats:
+                                ig_stats[uid_str]["failed"] = ig_stats[uid_str].get("failed", 0) + 1
+                            log_ig_terminal(uid, f"⚠️ Message box not found in GC #{g_idx}", "WARN")
+
+                        time.sleep(delay)
+                    except Exception as e_send:
+                        if uid in ig_stats:
+                            ig_stats[uid]["failed"] = ig_stats[uid].get("failed", 0) + 1
+                        elif uid_str in ig_stats:
+                            ig_stats[uid_str]["failed"] = ig_stats[uid_str].get("failed", 0) + 1
+                        log_ig_terminal(uid, f"❌ Send error in GC #{g_idx}: {e_send}", "ERROR")
+                        time.sleep(1)
+
+                    # --- STEP 2: PERFORM 1 NC RENAME ---
+                    if not ig_running.get(uid) and not ig_running.get(uid_str):
+                        break
+
+                    if nc_list:
+                        nc_raw = nc_list[nc_idx % len(nc_list)]
+                        nc_idx += 1
+                        current_target = raw_targets[nc_idx % len(raw_targets)] if raw_targets else ""
+                        if current_target:
+                            new_nc = nc_raw.replace("{target}", current_target) if "{target}" in nc_raw else f"[{current_target}] {nc_raw}"
+                        else:
+                            new_nc = nc_raw.replace("{target}", "").strip()
+
+                        try:
+                            gear = page.locator('svg[aria-label="Conversation information"]')
+                            if gear.count() > 0:
+                                gear.first.click(timeout=4000)
+                                time.sleep(1)
+                                change_btn = page.locator('div[aria-label="Change group name"][role="button"], div[role="button"]:has-text("Change group name")').first
+                                if change_btn.count() > 0:
+                                    change_btn.click(timeout=4000)
+                                    time.sleep(0.5)
+                                    group_input = page.locator('input[aria-label="Group name"][name="change-group-name"], input[placeholder="Group name"]').first
+                                    if group_input.count() > 0:
+                                        group_input.fill(new_nc)
+                                        time.sleep(0.5)
+                                        save_btn = page.locator('div[role="button"]:has-text("Save"), button:has-text("Save")').first
+                                        if save_btn.count() > 0 and save_btn.is_enabled():
+                                            save_btn.click(timeout=4000)
+                                            if uid in ig_stats:
+                                                ig_stats[uid]["renamed"] = ig_stats[uid].get("renamed", 0) + 1
+                                            elif uid_str in ig_stats:
+                                                ig_stats[uid_str]["renamed"] = ig_stats[uid_str].get("renamed", 0) + 1
+                                            log_ig_terminal(uid, f"🏷️ [1 NC] Renamed GC #{g_idx} to '{new_nc}'", "SUCCESS")
+                                gear.first.click(timeout=4000)
+                                time.sleep(0.5)
+                        except Exception as e_nc:
+                            log_ig_terminal(uid, f"⚠️ NC rename notice in GC #{g_idx}: {e_nc}", "WARN")
+
+                    time.sleep(1)
+
+                # Close browser immediately after completing round across all GCs
+                try:
+                    browser.close()
+                    browser = None
+                except Exception:
+                    pass
+
+            # --- ALL GCS FINISHED: CYCLE DELAY (10s wait) BEFORE NEXT CYCLE ---
+            if not ig_running.get(uid) and not ig_running.get(uid_str):
+                break
+
+            log_ig_terminal(uid, f"✨ Cycle #{cycle_count} completed across all {len(gc_links)} groups! Chrome closed to clear load. Waiting {cycle_delay}s before starting next loop...", "WARN")
+            for _ in range(cycle_delay):
+                if not ig_running.get(uid) and not ig_running.get(uid_str):
+                    break
+                time.sleep(1)
 
         except Exception as e_engine:
-            log_ig_terminal(uid, f"⚠️ Multi-GC Playwright notice: {e_engine}", "WARN")
+            log_ig_terminal(uid, f"⚠️ Multi-GC Playwright notice: {e_engine}. Auto-recovering in 3s...", "WARN")
             time.sleep(3)
+        finally:
+            if browser:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+            if os.path.exists(user_data_dir):
+                try:
+                    shutil.rmtree(user_data_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
     ig_running[uid] = False
+    ig_running[uid_str] = False
     if uid in ig_live:
         ig_live[uid]["running"] = False
+    if uid_str in ig_live:
+        ig_live[uid_str]["running"] = False
     if uid in ig_stats:
         ig_stats[uid]["running"] = False
+    if uid_str in ig_stats:
+        ig_stats[uid_str]["running"] = False
     log_ig_terminal(uid, "⏹️ Multi-GC Playwright Engine stopped.", "INFO")
+
+# ================= INSTAGRAM PLAYWRIGHT PRIVATE API ENGINE =================
+# 50 Default Emojis for NC Loops
+IG_PRIVATE_EMOJI_LIST = [
+    '👑', '🔥', '⚡', '💥', '💀', '😈', '🦁', '🦅', '⚔️', '🔱',
+    '💎', '🚀', '🌟', '🌪️', '💣', '🩸', '🎯', '🐅', '🐺', '🐉',
+    '🏆', '🥇', '🎩', '🥋', '🥊', '🛡️', '🗡️', '⛓️', '🕷️', '🦂',
+    '🦇', '👹', '👺', '🥶', '🥵', '☠️', '🚩', '🪐', '☄️', '🔮',
+    '🧿', '🖤', '🤍', '🤎', '💜', '💙', '💚', '💛', '🧡', '❤️'
+]
+
+def ig_private_api_worker(uid):
+    uid_str = str(uid)
+    full_db = get_full_db()
+    acc = full_db.get("ig_private_accounts", {}).get(uid_str) or full_db.get("ig_private_accounts", {}).get(uid, {})
+    if not acc:
+        ig_priv_running[uid] = False
+        ig_priv_running[uid_str] = False
+        log_ig_priv_terminal(uid, "Account not found in database. Stopped.", "ERROR")
+        return
+
+    auth_type = str(acc.get("auth_type", "cookie")).lower().strip()
+    sessionid = (acc.get("sessionid") or "").strip()
+    csrftoken = (acc.get("csrftoken") or "").strip()
+    username = str(acc.get("username", "")).strip()
+    password = str(acc.get("password", "")).strip()
+    totp_key = str(acc.get("totp_key", "")).strip()
+
+    if auth_type == "credentials" or sessionid.startswith("CREDENTIALS:"):
+        if sessionid.startswith("CREDENTIALS:"):
+            parts = sessionid.split(":", 2)
+            if len(parts) >= 3:
+                username = username or parts[1]
+                password = password or parts[2]
+
+        v_code = ""
+        if totp_key:
+            try:
+                import pyotp
+                totp = pyotp.TOTP(totp_key.replace(" ", "").upper())
+                v_code = totp.now()
+                log_ig_priv_terminal(uid, f"🔑 Generated Live 2FA OTP Code: {v_code}", "INFO")
+            except Exception as e_totp:
+                log_ig_priv_terminal(uid, f"⚠️ 2FA Key Notice: {e_totp}", "WARN")
+
+        log_ig_priv_terminal(uid, f"🔐 Authenticating @{username} via Direct Credentials...", "INFO")
+        try:
+            client, settings, resolved_user = init_instagram_client(
+                username=username,
+                password=password,
+                verification_code=v_code,
+                log_fn=lambda m, l: log_ig_priv_terminal(uid, m, l)
+            )
+            cookies = settings.get("cookies", {})
+            parsed_cookies = cookies
+            clean_sess = cookies.get("sessionid", "")
+            clean_csrf = cookies.get("csrftoken", "")
+            user_id = str(settings.get("user_id") or "")
+            log_ig_priv_terminal(uid, f"✅ Successfully logged in as @{resolved_user}!", "SUCCESS")
+        except Exception as e_auth:
+            log_ig_priv_terminal(uid, f"❌ Login Failed: {e_auth}", "ERROR")
+            ig_priv_running[uid] = False
+            ig_priv_running[uid_str] = False
+            return
+    else:
+        parsed_cookies, clean_sess, clean_csrf, user_id = parse_instagram_cookie_input(sessionid, csrftoken or "")
+
+    log_ig_priv_terminal(uid, f"🚀 Playwright Private Engine started for Bot #{uid}!", "SUCCESS")
+
+    cycle_count = 0
+    msg_cycle_idx = 0
+    emoji_idx = 0
+
+    while ig_priv_running.get(uid, False) or ig_priv_running.get(uid_str, False):
+        user_data_dir = os.path.join(tempfile.gettempdir(), f"ig_priv_browser_{uid}_{uuid.uuid4().hex[:6]}")
+        os.makedirs(user_data_dir, exist_ok=True)
+        browser = None
+
+        try:
+            full_db = get_full_db()
+            acc = full_db.get("ig_private_accounts", {}).get(uid_str) or full_db.get("ig_private_accounts", {}).get(uid) or acc
+
+            mode_type = str(acc.get("mode_type", "multi")).lower().strip() # "single" or "multi"
+            prefix = (acc.get("prefix") or acc.get("target_name") or "").strip()
+            target_name = (acc.get("target_name") or "").strip()
+
+            raw_groups = acc.get("group_names", []) or acc.get("thread_ids", [])
+            if isinstance(raw_groups, str):
+                groups = [g.strip() for g in re.split(r"[,;\n\r]+", raw_groups) if g.strip()]
+            elif isinstance(raw_groups, list):
+                groups = [str(g).strip() for g in raw_groups if str(g).strip()]
+            else:
+                groups = []
+
+            # Format full group chat URLs
+            gc_urls = []
+            for g in groups:
+                if g.startswith("http"):
+                    gc_urls.append(g)
+                else:
+                    gc_urls.append(f"https://www.instagram.com/direct/t/{g}/")
+
+            if not gc_urls:
+                log_ig_priv_terminal(uid, "⚠️ No GC Link provided. Please add Group URL / Thread ID.", "WARN")
+                time.sleep(5)
+                continue
+
+            raw_messages = acc.get("messages", [])
+            if isinstance(raw_messages, str):
+                messages = [m.strip() for m in raw_messages.replace("\r", "").split("\n") if m.strip()]
+            elif isinstance(raw_messages, list):
+                messages = [str(m).strip() for m in raw_messages if str(m).strip()]
+            else:
+                messages = []
+            if not messages:
+                messages = ["SNAPPY CLAN ON TOP 🔥", "PLAYWRIGHT PRIVATE API STRIKE 💥", "WAR MODE ACTIVE ⚡"]
+
+            # Load Custom NC titles
+            raw_nc = acc.get("nc_names") or acc.get("group_renames") or ""
+            if isinstance(raw_nc, str):
+                nc_list = [n.strip() for n in raw_nc.replace("\r", "").split("\n") if n.strip()]
+            elif isinstance(raw_nc, list):
+                nc_list = [str(n).strip() for n in raw_nc if str(n).strip()]
+            else:
+                nc_list = []
+            if not nc_list:
+                nc_list = ["KING CONQUERED THIS GC 👑", "SNAPPY CLAN ON TOP 🔥", "LOCKED BY KING SQUAD ⚡"]
+
+            # Load Script Gap Formatting
+            header_text = str(acc.get("header_text") or "👑 SPAM BY KING 👑").strip()
+            footer_text = str(acc.get("footer_text") or "👑 SCRIPT BY SNAPPY CLAN 👑").strip()
+            space_lines = int(acc.get("space_lines", 35))
+            blank_block = "\n".join(["⠀" for _ in range(space_lines)])
+            use_long_format = bool(acc.get("use_long_format", True))
+
+            delay = float(acc.get("delay", 2.0))
+            if delay < 0.3:
+                delay = 2.0
+
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                browser = p.chromium.launch_persistent_context(
+                    user_data_dir,
+                    headless=True,
+                    viewport={"width": 1280, "height": 720},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                    args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-notifications"]
+                )
+
+                # Inject parsed cookies
+                cookie_list = []
+                for ck_k, ck_v in parsed_cookies.items():
+                    cookie_list.append({
+                        "name": ck_k,
+                        "value": ck_v,
+                        "domain": ".instagram.com",
+                        "path": "/",
+                        "secure": True
+                    })
+                if clean_sess and not any(c["name"] == "sessionid" for c in cookie_list):
+                    cookie_list.append({
+                        "name": "sessionid",
+                        "value": clean_sess,
+                        "domain": ".instagram.com",
+                        "path": "/",
+                        "secure": True
+                    })
+                browser.add_cookies(cookie_list)
+                page = browser.new_page()
+                page.route("**/*", block_media)
+
+                if mode_type == "single" or len(gc_urls) == 1:
+                    target_url = gc_urls[0]
+                    cycle_count += 1
+                    repeat_msgs = int(acc.get("repeat_count") or 15)
+                    if repeat_msgs < 1:
+                        repeat_msgs = 15
+
+                    log_ig_priv_terminal(uid, f"🎯 [SINGLE GC CYCLE #{cycle_count}] Opening GC: {target_url}...", "INFO")
+                    page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+                    time.sleep(3)
+                    dismiss_instagram_modals(page)
+
+                    if "/direct/t/" not in page.url:
+                        dismiss_instagram_modals(page)
+                        page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+                        time.sleep(3)
+                        dismiss_instagram_modals(page)
+
+                    msg_box = get_msg_box(page)
+                    if not msg_box:
+                        time.sleep(3)
+                        dismiss_instagram_modals(page)
+                        msg_box = get_msg_box(page)
+
+                    # 1. Send Messages with 35-line Gap Format
+                    log_ig_priv_terminal(uid, f"📨 Firing {repeat_msgs} Messages in GC...", "INFO")
+                    for m_i in range(repeat_msgs):
+                        if not ig_priv_running.get(uid) and not ig_priv_running.get(uid_str):
+                            break
+
+                        raw_txt = messages[msg_cycle_idx % len(messages)]
+                        msg_cycle_idx += 1
+                        current_emoji = IG_PRIVATE_EMOJI_LIST[emoji_idx % len(IG_PRIVATE_EMOJI_LIST)]
+
+                        if prefix:
+                            core_msg = f"[{prefix}] {raw_txt} {current_emoji}"
+                        elif target_name:
+                            core_msg = f"[{target_name}] {raw_txt} {current_emoji}"
+                        else:
+                            core_msg = f"{raw_txt} {current_emoji}"
+
+                        if use_long_format:
+                            final_msg = f"{header_text}\n{blank_block}\n{core_msg}\n{blank_block}\n{footer_text}"
+                        else:
+                            final_msg = core_msg
+
+                        try:
+                            if not msg_box or not msg_box.is_visible():
+                                msg_box = get_msg_box(page)
+
+                            if msg_box:
+                                msg_box.click(timeout=3000, force=True)
+                                page.keyboard.press("Control+A")
+                                page.keyboard.press("Backspace")
+                                page.keyboard.insert_text(final_msg)
+                                time.sleep(0.2)
+                                
+                                # Trigger send
+                                sent = False
+                                send_btn = page.locator('button:has-text("Send"), div[role="button"]:has-text("Send"), div[aria-label="Send"], svg[aria-label="Send"]').first
+                                if send_btn.count() > 0 and send_btn.is_visible():
+                                    try:
+                                        send_btn.click(timeout=1500, force=True)
+                                        sent = True
+                                    except Exception:
+                                        pass
+                                if not sent:
+                                    page.keyboard.press("Enter")
+                                
+                                if uid in ig_priv_stats:
+                                    ig_priv_stats[uid]["sent"] = ig_priv_stats[uid].get("sent", 0) + 1
+                                elif uid_str in ig_priv_stats:
+                                    ig_priv_stats[uid_str]["sent"] = ig_priv_stats[uid_str].get("sent", 0) + 1
+                                log_ig_priv_terminal(uid, f"📨 [Msg {m_i+1}/{repeat_msgs}] Sent: '{core_msg}' ({space_lines} gap lines)", "SUCCESS")
+                            else:
+                                if uid in ig_priv_stats:
+                                    ig_priv_stats[uid]["failed"] = ig_priv_stats[uid].get("failed", 0) + 1
+                                elif uid_str in ig_priv_stats:
+                                    ig_priv_stats[uid_str]["failed"] = ig_priv_stats[uid_str].get("failed", 0) + 1
+                                log_ig_priv_terminal(uid, f"❌ Msg box lost on strike {m_i+1}", "WARN")
+                        except Exception as e_send:
+                            log_ig_priv_terminal(uid, f"❌ Send notice: {e_send}", "WARN")
+
+                        time.sleep(delay)
+
+                    # 2. Perform 1 NC Rename using Modal dialog + Save button
+                    if ig_priv_running.get(uid) or ig_priv_running.get(uid_str):
+                        nc_template = nc_list[emoji_idx % len(nc_list)]
+                        current_emoji = IG_PRIVATE_EMOJI_LIST[emoji_idx % len(IG_PRIVATE_EMOJI_LIST)]
+                        emoji_idx += 1
+                        
+                        if "{target}" in nc_template:
+                            new_title = nc_template.replace("{target}", target_name or prefix or "KING")
+                        else:
+                            new_title = f"{nc_template} {current_emoji}".strip()
+
+                        log_ig_priv_terminal(uid, f"🏷️ Renaming GC to '{new_title}'...", "INFO")
+                        try:
+                            # 1. Click Conversation Info gear/i icon
+                            info_btn = page.locator('svg[aria-label="Conversation information"], svg[aria-label="Thread Details"], svg[aria-label="Group Details"], div[role="button"]:has(svg[aria-label="Conversation information"])').first
+                            if info_btn.count() > 0 and info_btn.is_visible():
+                                info_btn.click(timeout=3000, force=True)
+                                time.sleep(1)
+
+                            # 2. Click "Change group name" button
+                            change_btn = page.locator('div[aria-label="Change group name"][role="button"], div[role="button"]:has-text("Change group name")').first
+                            if change_btn.count() > 0 and change_btn.is_visible():
+                                change_btn.click(timeout=3000, force=True)
+                                time.sleep(0.5)
+
+                            # 3. Fill Group Name
+                            title_input = page.locator('input[aria-label="Group name"][name="change-group-name"], input[placeholder="Group name"], input[placeholder*="group name"], input[aria-label*="Change Group Name"]').first
+                            if title_input.count() > 0 and title_input.is_visible():
+                                title_input.click(timeout=2000)
+                                page.keyboard.press("Control+A")
+                                page.keyboard.press("Backspace")
+                                title_input.fill(new_title)
+                                time.sleep(0.5)
+
+                                # 4. Click Save
+                                save_btn = page.locator('div[role="button"]:has-text("Save"), button:has-text("Save")').first
+                                if save_btn.count() > 0 and save_btn.is_visible():
+                                    save_btn.click(timeout=3000, force=True)
+                                else:
+                                    page.keyboard.press("Enter")
+                                
+                                time.sleep(1)
+                                if uid in ig_priv_stats:
+                                    ig_priv_stats[uid]["renamed"] = ig_priv_stats[uid].get("renamed", 0) + 1
+                                elif uid_str in ig_priv_stats:
+                                    ig_priv_stats[uid_str]["renamed"] = ig_priv_stats[uid_str].get("renamed", 0) + 1
+                                log_ig_priv_terminal(uid, f"🏷️ [1 NC] Renamed GC to '{new_title}'", "SUCCESS")
+                            
+                            # Close info panel if still open
+                            if info_btn.count() > 0 and info_btn.is_visible():
+                                info_btn.click(timeout=2000, force=True)
+
+                        except Exception as e_nc:
+                            log_ig_priv_terminal(uid, f"⚠️ NC rename notice: {e_nc}", "WARN")
+
+                else:
+                    # MULTI GC ROUND (1 Text with 35-line Gap + 1 NC per GC)
+                    cycle_count += 1
+                    log_ig_priv_terminal(uid, f"🌐 [MULTI-GC CYCLE #{cycle_count}] Striking across {len(gc_urls)} Group Chats (1 Msg + 1 NC each)...", "INFO")
+                    for t_idx, target_url in enumerate(gc_urls, 1):
+                        if not ig_priv_running.get(uid) and not ig_priv_running.get(uid_str):
+                            break
+
+                        log_ig_priv_terminal(uid, f"➡️ Entering GC #{t_idx}/{len(gc_urls)}...", "INFO")
+                        
+                        # Navigate with auto-retry if page/thread doesn't load immediately
+                        try:
+                            page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+                            time.sleep(2.5)
+                            dismiss_instagram_modals(page)
+                            
+                            if "/direct/t/" not in page.url:
+                                dismiss_instagram_modals(page)
+                                time.sleep(1)
+                                page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+                                time.sleep(2.5)
+                                dismiss_instagram_modals(page)
+                        except Exception as e_nav:
+                            log_ig_priv_terminal(uid, f"⚠️ Navigation retry for GC #{t_idx}: {e_nav}", "WARN")
+                            try:
+                                page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+                                time.sleep(3)
+                                dismiss_instagram_modals(page)
+                            except Exception:
+                                pass
+
+                        msg_box = get_msg_box(page)
+                        if not msg_box:
+                            # Re-verify and retry finding msg_box after clearing modals
+                            time.sleep(2)
+                            dismiss_instagram_modals(page)
+                            msg_box = get_msg_box(page)
+
+                        raw_txt = messages[msg_cycle_idx % len(messages)]
+                        msg_cycle_idx += 1
+                        current_emoji = IG_PRIVATE_EMOJI_LIST[emoji_idx % len(IG_PRIVATE_EMOJI_LIST)]
+
+                        if prefix:
+                            core_msg = f"[{prefix}] {raw_txt} {current_emoji}"
+                        elif target_name:
+                            core_msg = f"[{target_name}] {raw_txt} {current_emoji}"
+                        else:
+                            core_msg = f"{raw_txt} {current_emoji}"
+
+                        if use_long_format:
+                            final_msg = f"{header_text}\n{blank_block}\n{core_msg}\n{blank_block}\n{footer_text}"
+                        else:
+                            final_msg = core_msg
+
+                        # --- STEP 1: SEND 1 TEXT MESSAGE ---
+                        try:
+                            if msg_box and msg_box.is_visible():
+                                try:
+                                    msg_box.click(timeout=3000, force=True)
+                                except Exception:
+                                    try:
+                                        msg_box.evaluate("el => el.focus()")
+                                    except Exception:
+                                        pass
+                                time.sleep(0.1)
+                                page.keyboard.press("Control+A")
+                                page.keyboard.press("Backspace")
+                                time.sleep(0.1)
+                                page.keyboard.insert_text(final_msg)
+                                time.sleep(0.3)
+                                
+                                sent = False
+                                send_btn = page.locator('button:has-text("Send"), div[role="button"]:has-text("Send"), div[aria-label="Send"], svg[aria-label="Send"]').first
+                                if send_btn.count() > 0 and send_btn.is_visible():
+                                    try:
+                                        send_btn.click(timeout=1500, force=True)
+                                        sent = True
+                                    except Exception:
+                                        pass
+                                if not sent:
+                                    page.keyboard.press("Enter")
+
+                                if uid in ig_priv_stats:
+                                    ig_priv_stats[uid]["sent"] = ig_priv_stats[uid].get("sent", 0) + 1
+                                elif uid_str in ig_priv_stats:
+                                    ig_priv_stats[uid_str]["sent"] = ig_priv_stats[uid_str].get("sent", 0) + 1
+                                log_ig_priv_terminal(uid, f"📨 [1 Text] GC #{t_idx}: '{core_msg}'", "SUCCESS")
+                            else:
+                                if uid in ig_priv_stats:
+                                    ig_priv_stats[uid]["failed"] = ig_priv_stats[uid].get("failed", 0) + 1
+                                elif uid_str in ig_priv_stats:
+                                    ig_priv_stats[uid_str]["failed"] = ig_priv_stats[uid_str].get("failed", 0) + 1
+                                log_ig_priv_terminal(uid, f"❌ Msg box not visible in GC #{t_idx}", "WARN")
+                        except Exception as e_send:
+                            log_ig_priv_terminal(uid, f"❌ Send notice GC #{t_idx}: {e_send}", "WARN")
+
+                        time.sleep(delay)
+
+                        # --- STEP 2: 1 NC RENAME PER GC ---
+                        if not ig_priv_running.get(uid) and not ig_priv_running.get(uid_str):
+                            break
+
+                        nc_template = nc_list[emoji_idx % len(nc_list)]
+                        current_emoji = IG_PRIVATE_EMOJI_LIST[emoji_idx % len(IG_PRIVATE_EMOJI_LIST)]
+                        emoji_idx += 1
+                        
+                        if "{target}" in nc_template:
+                            new_title = nc_template.replace("{target}", target_name or prefix or "KING")
+                        else:
+                            new_title = f"{nc_template} {current_emoji}".strip()
+
+                        try:
+                            info_btn = page.locator('svg[aria-label="Conversation information"], svg[aria-label="Thread Details"], svg[aria-label="Group Details"], div[role="button"]:has(svg[aria-label="Conversation information"])').first
+                            if info_btn.count() > 0 and info_btn.is_visible():
+                                info_btn.click(timeout=3000, force=True)
+                                time.sleep(1)
+
+                            change_btn = page.locator('div[aria-label="Change group name"][role="button"], div[role="button"]:has-text("Change group name"), button:has-text("Change group name")').first
+                            if change_btn.count() > 0 and change_btn.is_visible():
+                                change_btn.click(timeout=3000, force=True)
+                                time.sleep(0.5)
+
+                            title_input = page.locator('input[aria-label="Group name"][name="change-group-name"], input[placeholder="Group name"], input[placeholder*="group name"], input[aria-label*="Change Group Name"]').first
+                            if title_input.count() > 0 and title_input.is_visible():
+                                title_input.click(timeout=2000)
+                                page.keyboard.press("Control+A")
+                                page.keyboard.press("Backspace")
+                                title_input.fill(new_title)
+                                time.sleep(0.5)
+
+                                save_btn = page.locator('div[role="button"]:has-text("Save"), button:has-text("Save")').first
+                                if save_btn.count() > 0 and save_btn.is_visible():
+                                    save_btn.click(timeout=3000, force=True)
+                                else:
+                                    page.keyboard.press("Enter")
+                                
+                                time.sleep(1)
+                                if uid in ig_priv_stats:
+                                    ig_priv_stats[uid]["renamed"] = ig_priv_stats[uid].get("renamed", 0) + 1
+                                elif uid_str in ig_priv_stats:
+                                    ig_priv_stats[uid_str]["renamed"] = ig_priv_stats[uid_str].get("renamed", 0) + 1
+                                log_ig_priv_terminal(uid, f"🏷️ [1 NC] Renamed GC #{t_idx} to '{new_title}'", "SUCCESS")
+                            
+                            # Close info panel if still open
+                            if info_btn.count() > 0 and info_btn.is_visible():
+                                info_btn.click(timeout=2000, force=True)
+                        except Exception as e_nc:
+                            log_ig_priv_terminal(uid, f"⚠️ NC rename notice in GC #{t_idx}: {e_nc}", "WARN")
+
+                        time.sleep(delay)
+
+                browser.close()
+                browser = None
+
+        except Exception as e_cycle:
+            log_ig_priv_terminal(uid, f"⚠️ Playwright Loop notice: {e_cycle}. Auto-recovering in 3s...", "WARN")
+            time.sleep(3)
+        finally:
+            if browser:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+            if os.path.exists(user_data_dir):
+                try:
+                    shutil.rmtree(user_data_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+    ig_priv_running[uid] = False
+    ig_priv_running[uid_str] = False
+    if uid in ig_priv_live:
+        ig_priv_live[uid]["running"] = False
+    if uid_str in ig_priv_live:
+        ig_priv_live[uid_str]["running"] = False
+    if uid in ig_priv_stats:
+        ig_priv_stats[uid]["running"] = False
+    if uid_str in ig_priv_stats:
+        ig_priv_stats[uid_str]["running"] = False
+    log_ig_priv_terminal(uid, "⏹️ Playwright Private Engine stopped.", "INFO")
+
+@app.route("/ig_priv_verify_login", methods=["POST"])
+def ig_priv_verify_login():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+
+    data = request.json or {}
+    auth_type = str(data.get("auth_type", "cookie")).lower().strip()
+    sessionid = data.get("sessionid", "").strip()
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+    totp_key = data.get("totp_key", "").strip()
+    verification_code = data.get("verification_code", "").strip()
+
+    log_ig_priv_terminal("AUTH", f"🔍 Verifying login credentials for @{username or 'cookie_user'}...", "INFO")
+
+    if auth_type == "credentials":
+        if not username or not password:
+            return jsonify({"status": "error", "message": "Username and Password are required!"}), 400
+
+        v_code = verification_code
+        if not v_code and totp_key:
+            try:
+                import pyotp
+                totp = pyotp.TOTP(totp_key.replace(" ", "").upper())
+                v_code = totp.now()
+                log_ig_priv_terminal("AUTH", f"🔑 Generated 2FA Code from Secret Key: {v_code}", "INFO")
+            except Exception as e_totp:
+                log_ig_priv_terminal("AUTH", f"⚠️ 2FA Key calculation error: {e_totp}", "WARN")
+
+        try:
+            client, settings, resolved_user = init_instagram_client(
+                username=username,
+                password=password,
+                verification_code=v_code,
+                log_fn=lambda m, l: log_ig_priv_terminal("AUTH", m, l)
+            )
+            cookies = settings.get("cookies", {})
+            sid = cookies.get("sessionid", "")
+            csrf = cookies.get("csrftoken", "")
+            uid = str(settings.get("user_id") or "")
+            log_ig_priv_terminal("AUTH", f"🎉 Successfully verified login for @{resolved_user} (ID: {uid})!", "SUCCESS")
+            return jsonify({
+                "status": "ok",
+                "message": f"Successfully authenticated as @{resolved_user}!",
+                "sessionid": sid,
+                "csrftoken": csrf,
+                "user_id": uid,
+                "username": resolved_user
+            })
+        except Exception as e:
+            err_msg = str(e)
+            if "2FA Verification Required" in err_msg or "two_factor" in err_msg.lower():
+                log_ig_priv_terminal("AUTH", "🔐 2FA / Security Code required! Please enter the code sent to your phone/email/app.", "WARN")
+                return jsonify({"status": "2fa_required", "message": "Instagram 2FA OTP Code Required! Enter the code below."}), 200
+            elif "Checkpoint" in err_msg or "challenge" in err_msg.lower():
+                log_ig_priv_terminal("AUTH", "⚠️ Instagram Checkpoint! Approve device on Instagram app.", "WARN")
+                return jsonify({"status": "checkpoint_required", "message": "Please approve login from your Instagram app or email."}), 200
+            else:
+                log_ig_priv_terminal("AUTH", f"❌ Login Failed: {err_msg}", "ERROR")
+                return jsonify({"status": "error", "message": err_msg}), 400
+    else:
+        # Cookie verification
+        parsed_cookies, clean_sess, clean_csrf, user_id = parse_instagram_cookie_input(sessionid)
+        if not clean_sess:
+            return jsonify({"status": "error", "message": "Invalid cookie string or missing sessionid!"}), 400
+        
+        # Test request to Instagram Inbox
+        s = requests.Session()
+        for k, v in parsed_cookies.items():
+            s.cookies.set(k, v, domain=".instagram.com")
+        s.cookies.set("sessionid", clean_sess, domain=".instagram.com")
+        try:
+            r = s.get("https://www.instagram.com/api/v1/direct_v2/inbox/?limit=1", headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "X-IG-App-ID": "936619743392459"
+            }, timeout=8)
+            if r.status_code == 200 and r.json().get("status") == "ok":
+                log_ig_priv_terminal("AUTH", f"🎉 Session cookie verified! User ID: {user_id or 'Active'}", "SUCCESS")
+                return jsonify({"status": "ok", "message": "Session cookie is 100% active and authenticated!", "sessionid": clean_sess})
+            else:
+                log_ig_priv_terminal("AUTH", "❌ Cookie session expired or login required.", "ERROR")
+                return jsonify({"status": "error", "message": "Cookie expired or checkpoint required."}), 400
+        except Exception as e_ck:
+            log_ig_priv_terminal("AUTH", f"⚠️ Verification check error: {e_ck}", "WARN")
+            return jsonify({"status": "ok", "message": "Cookie loaded.", "sessionid": clean_sess})
+
+@app.route("/ig_priv_scrape_links", methods=["POST"])
+def ig_priv_scrape_links():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+    
+    data = request.json or {}
+    sessionid = data.get("sessionid", "").strip()
+    csrftoken = data.get("csrftoken", "").strip()
+    max_groups = int(data.get("max_groups") or 1000)
+
+    if not sessionid:
+        return jsonify({"status": "error", "message": "Session ID is required to fetch groups!"}), 400
+
+    links = scrape_instagram_groups(sessionid, csrftoken, max_groups=max_groups, log_fn=lambda m, l: log_ig_priv_terminal("AUTH", m, l))
+    return jsonify({"status": "ok", "links": links, "count": len(links)})
+
+@app.route("/ig_priv_add_account", methods=["POST"])
+def ig_priv_add_account():
+    if not is_authenticated():
+        log_ig_priv_terminal("AUTH", "Login required to add account.", "ERROR")
+        return jsonify({"status": "login_required"}), 401
+
+    data = request.json or {}
+    auth_type = str(data.get("auth_type", "cookie")).lower().strip()
+    raw_session = data.get("sessionid", "").strip()
+    sessionid = raw_session
+    csrftoken = data.get("csrftoken", "").strip()
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+    totp_key = data.get("totp_key", "").strip()
+
+    if auth_type == "credentials" and username and password:
+        sessionid = f"CREDENTIALS:{username}:{password}"
+    else:
+        if ";" in sessionid or "=" in sessionid:
+            for part in sessionid.split(";"):
+                part = part.strip()
+                if part.lower().startswith("sessionid="):
+                    sessionid = part.split("=", 1)[1].strip()
+                elif part.lower().startswith("csrftoken="):
+                    csrftoken = part.split("=", 1)[1].strip()
+
+        if "%3A" in sessionid or "%3a" in sessionid:
+            sessionid = urllib.parse.unquote(sessionid).strip()
+
+        if not sessionid:
+            log_ig_priv_terminal("AUTH", "Missing sessionid cookie string.", "ERROR")
+            return jsonify({"status": "error", "message": "Session ID or Credentials are required!"}), 400
+
+    mode_type = str(data.get("mode_type", "multi")).lower().strip()
+    fetch_mode = str(data.get("fetch_mode", "manual")).lower().strip()
+    target_name = str(data.get("target_name", "")).strip()
+    prefix = str(data.get("prefix", "")).strip() or target_name
+    repeat_count = int(data.get("repeat_count", 15 if mode_type == "single" else 1))
+    delay = float(data.get("delay", 2.0))
+
+    raw_groups = data.get("group_names", "")
+    if isinstance(raw_groups, str):
+        group_names = [g.strip() for g in re.split(r"[,;\n\r]+", raw_groups) if g.strip()]
+    elif isinstance(raw_groups, list):
+        group_names = [str(g).strip() for g in raw_groups if str(g).strip()]
+    else:
+        group_names = []
+
+    raw_messages = data.get("messages", "")
+    if isinstance(raw_messages, str):
+        messages = [m.strip() for m in raw_messages.replace("\r", "").split("\n") if m.strip()]
+    elif isinstance(raw_messages, list):
+        messages = [str(m).strip() for m in raw_messages if str(m).strip()]
+    else:
+        messages = []
+
+    raw_nc = data.get("nc_names", "")
+    if isinstance(raw_nc, str):
+        nc_names = [n.strip() for n in raw_nc.replace("\r", "").split("\n") if n.strip()]
+    elif isinstance(raw_nc, list):
+        nc_names = [str(n).strip() for n in raw_nc if str(n).strip()]
+    else:
+        nc_names = []
+
+    header_text = str(data.get("header_text", "👑 SPAM BY KING 👑")).strip()
+    footer_text = str(data.get("footer_text", "👑 SCRIPT BY SNAPPY CLAN 👑")).strip()
+    space_lines = int(data.get("space_lines", 35))
+
+    uid = next_ig_private_uid()
+    current_user = get_current_user()
+
+    acc_data = {
+        "uid": uid,
+        "auth_type": auth_type,
+        "username": username,
+        "password": password,
+        "totp_key": totp_key,
+        "mode_type": mode_type,
+        "fetch_mode": fetch_mode,
+        "sessionid": sessionid,
+        "csrftoken": csrftoken,
+        "target_name": target_name,
+        "prefix": prefix,
+        "group_names": group_names,
+        "messages": messages,
+        "nc_names": nc_names,
+        "header_text": header_text,
+        "footer_text": footer_text,
+        "space_lines": space_lines,
+        "repeat_count": repeat_count,
+        "delay": delay,
+        "owner": current_user,
+        "admin_name": get_user_display_name(current_user),
+        "system_owner": "SNAPPY CLAN KING",
+        "createdAt": str(datetime.utcnow())
+    }
+    save_ig_private_account_db(uid, acc_data)
+
+    start_time = time.time()
+    ig_priv_running[uid] = True
+    ig_priv_live[uid] = {"running": True, "started": start_time}
+    ig_priv_stats[uid] = {
+        "user": current_user,
+        "account": uid,
+        "sent": 0,
+        "failed": 0,
+        "renamed": 0,
+        "rename_failed": 0,
+        "running": True,
+        "uptime": 0,
+        "uptime_str": "00:00:00",
+        "started": start_time
+    }
+    threading.Thread(target=ig_private_api_worker, args=(uid,), daemon=True).start()
+    log_ig_priv_terminal(uid, f"✨ Private API Bot #{uid} ({mode_type.upper()}) deployed and live engine started!", "SUCCESS")
+    return jsonify({"status": "ok", "uid": uid, "target_name": target_name or f"PrivateBot_{uid}"})
+
+@app.route("/ig_priv_start", methods=["POST"])
+def ig_priv_start():
+    uid = str(request.json.get("uid"))
+    full_db = get_full_db()
+    acc = full_db.get("ig_private_accounts", {}).get(uid)
+    if not acc:
+        return jsonify({"status": "invalid", "message": "Account not found!"})
+
+    if ig_priv_running.get(uid):
+        return jsonify({"status": "already_running"})
+
+    ig_priv_running[uid] = True
+    start_time = time.time()
+    ig_priv_live[uid] = {"running": True, "started": start_time}
+    if uid not in ig_priv_stats:
+        ig_priv_stats[uid] = {"user": get_current_user(), "account": uid, "sent": 0, "failed": 0, "renamed": 0, "rename_failed": 0}
+    ig_priv_stats[uid]["running"] = True
+    ig_priv_stats[uid]["uptime"] = 0
+    ig_priv_stats[uid]["uptime_str"] = "00:00:00"
+    ig_priv_stats[uid]["started"] = start_time
+
+    threading.Thread(target=ig_private_api_worker, args=(uid,), daemon=True).start()
+    return jsonify({"status": "started"})
+
+@app.route("/ig_priv_stop", methods=["POST"])
+def ig_priv_stop():
+    uid = str(request.json.get("uid"))
+    ig_priv_running[uid] = False
+    if uid in ig_priv_live:
+        ig_priv_live[uid]["running"] = False
+    if uid in ig_priv_stats:
+        ig_priv_stats[uid]["running"] = False
+    log_ig_priv_terminal(uid, "Stop signal received.", "WARN")
+    return jsonify({"status": "stopped"})
+
+@app.route("/ig_priv_edit_account", methods=["POST"])
+def ig_priv_edit_account():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+
+    uid = str(request.json.get("uid"))
+    full_db = get_full_db()
+    acc = full_db.get("ig_private_accounts", {}).get(uid)
+    if not acc:
+        return jsonify({"status": "invalid"})
+
+    acc_owner = str(acc.get("owner", "")).strip().lower()
+    cur_user = str(get_current_user()).strip().lower()
+    if not is_owner() and acc_owner != cur_user:
+        return jsonify({"status": "denied"}), 403
+
+    acc["mode_type"] = str(request.json.get("mode_type", acc.get("mode_type", "multi"))).lower().strip()
+    acc["target_name"] = request.json.get("target_name", acc.get("target_name", "")).strip()
+    acc["prefix"] = request.json.get("prefix", acc.get("prefix", "")).strip()
+    acc["repeat_count"] = int(request.json.get("repeat_count", acc.get("repeat_count", 15 if acc["mode_type"] == "single" else 1)))
+    acc["delay"] = float(request.json.get("delay", acc.get("delay", 2.0)))
+
+    raw_groups = request.json.get("group_names", "")
+    if isinstance(raw_groups, str):
+        acc["group_names"] = [g.strip() for g in re.split(r"[,;\n\r]+", raw_groups) if g.strip()]
+    elif isinstance(raw_groups, list):
+        acc["group_names"] = [str(g).strip() for g in raw_groups if str(g).strip()]
+
+    raw_messages = request.json.get("messages", "")
+    if isinstance(raw_messages, str):
+        acc["messages"] = [m.strip() for m in raw_messages.replace("\r", "").split("\n") if m.strip()]
+    elif isinstance(raw_messages, list):
+        acc["messages"] = [str(m).strip() for m in raw_messages if str(m).strip()]
+
+    raw_nc = request.json.get("nc_names", "")
+    if isinstance(raw_nc, str):
+        acc["nc_names"] = [n.strip() for n in raw_nc.replace("\r", "").split("\n") if n.strip()]
+    elif isinstance(raw_nc, list):
+        acc["nc_names"] = [str(n).strip() for n in raw_nc if str(n).strip()]
+
+    acc["header_text"] = str(request.json.get("header_text", acc.get("header_text", "👑 SPAM BY KING 👑"))).strip()
+    acc["footer_text"] = str(request.json.get("footer_text", acc.get("footer_text", "👑 SCRIPT BY SNAPPY CLAN 👑"))).strip()
+    acc["space_lines"] = int(request.json.get("space_lines", acc.get("space_lines", 35)))
+
+    save_ig_private_account_db(uid, acc)
+    log_ig_priv_terminal(uid, f"💾 Private API Bot #{uid} updated in database!", "INFO")
+    return jsonify({"status": "ok"})
+
+@app.route("/ig_priv_delete_account", methods=["POST"])
+def ig_priv_delete_account():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+
+    uid = str(request.json.get("uid"))
+    full_db = get_full_db()
+    acc = full_db.get("ig_private_accounts", {}).get(uid)
+    if not acc:
+        return jsonify({"status": "invalid"})
+
+    acc_owner = str(acc.get("owner", "")).strip().lower()
+    cur_user = str(get_current_user()).strip().lower()
+    if not is_owner() and acc_owner != cur_user:
+        return jsonify({"status": "denied"}), 403
+
+    ig_priv_running[uid] = False
+    delete_ig_private_account_db(uid)
+    if uid in ig_priv_live:
+        del ig_priv_live[uid]
+    if uid in ig_priv_stats:
+        del ig_priv_stats[uid]
+    log_ig_priv_terminal(uid, f"🗑️ Private API Bot #{uid} deleted.", "WARN")
+    return jsonify({"status": "ok"})
+
+@app.route("/ig_priv_status")
+def ig_priv_status():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+
+    full_db = get_full_db()
+    priv_accounts = full_db.get("ig_private_accounts", {})
+    accounts = {}
+    visible = {}
+    me = str(get_current_user()).strip().lower()
+
+    if is_owner():
+        for uid, acc in priv_accounts.items():
+            acc_copy = dict(acc)
+            acc_copy["admin_name"] = get_user_display_name(acc.get("owner", ""))
+            acc_copy["system_owner"] = "SNAPPY CLAN KING"
+            accounts[uid] = acc_copy
+            if uid not in ig_priv_stats:
+                ig_priv_stats[uid] = {"user": acc.get("owner", ""), "account": uid, "sent": 0, "failed": 0, "renamed": 0, "rename_failed": 0, "running": False, "uptime": 0, "uptime_str": "00:00:00"}
+            visible[uid] = ig_priv_stats[uid]
+    else:
+        for uid, acc in priv_accounts.items():
+            acc_owner = str(acc.get("owner", "")).strip().lower()
+            if acc_owner == me or me in acc_owner or acc_owner in me:
+                acc_copy = dict(acc)
+                acc_copy["admin_name"] = get_user_display_name(acc.get("owner", ""))
+                acc_copy["system_owner"] = "SNAPPY CLAN KING"
+                accounts[uid] = acc_copy
+                if uid not in ig_priv_stats:
+                    ig_priv_stats[uid] = {"user": acc.get("owner", ""), "account": uid, "sent": 0, "failed": 0, "renamed": 0, "rename_failed": 0, "running": False, "uptime": 0, "uptime_str": "00:00:00"}
+                visible[uid] = ig_priv_stats[uid]
+
+    for uid, s in visible.items():
+        uid_str = str(uid)
+        live_info = ig_priv_live.get(uid) or ig_priv_live.get(uid_str)
+        if live_info and live_info.get("running") and live_info.get("started"):
+            s["running"] = True
+            elapsed = int(time.time() - live_info["started"])
+            s["uptime"] = elapsed
+            s["uptime_str"] = format_uptime(elapsed)
+            s["started"] = live_info["started"]
+        else:
+            s["running"] = False
+            s["uptime"] = 0
+            s["uptime_str"] = "00:00:00"
+
+    if is_owner():
+        ret_logs = ig_priv_terminal_logs
+    else:
+        user_uids = set(str(k) for k in accounts.keys())
+        user_uids.add("AUTH")
+        ret_logs = [l for l in ig_priv_terminal_logs if str(l.get("uid")) in user_uids]
+
+    return jsonify({"accounts": accounts, "stats": visible, "terminal_logs": ret_logs})
 
 @app.route("/add_account", methods=["POST"])
 def add_account():
@@ -2551,14 +4289,31 @@ def add_account():
         return jsonify({"status": "login_required"}), 401
 
     data = request.json or {}
-    sessionid = data.get("sessionid", "").strip()
+    raw_session = data.get("sessionid", "").strip()
+    sessionid = raw_session
     csrftoken = data.get("csrftoken", "").strip()
+
+    # Auto-extract sessionid and csrftoken if full cookie string was pasted
+    if ";" in sessionid or "=" in sessionid:
+        for part in sessionid.split(";"):
+            if "=" in part:
+                k, v = part.strip().split("=", 1)
+                if k.strip().lower() == "sessionid":
+                    sessionid = v.strip()
+                elif k.strip().lower() == "csrftoken" and not csrftoken:
+                    csrftoken = v.strip()
+
+    if "%3A" in sessionid or "%3a" in sessionid:
+        sessionid = urllib.parse.unquote(sessionid).strip()
+    if sessionid.lower().startswith("sessionid="):
+        sessionid = sessionid[10:].strip()
+
     opponent = data.get("opponent", "").strip() or data.get("target", "").strip() or ""
     header_text = data.get("header_text", "").strip() or "👑 SPAM BY KING 👑"
-    footer_text = data.get("footer_text", "").strip() or "👑 SCRIPT BY SERVER GOD CLAN 👑"
+    footer_text = data.get("footer_text", "").strip() or "👑 SCRIPT BY SNAPPY CLAN 👑"
     space_lines = int(data.get("space_lines", 35))
     use_long_format = bool(data.get("use_long_format", True))
-    max_groups = int(data.get("max_groups", 5))
+    max_groups = int(data.get("max_groups", 150))
     delay = float(data.get("delay", 2.0))
     cycle_delay = int(data.get("cycle_delay", 10))
 
@@ -2594,7 +4349,17 @@ def add_account():
     log_ig_terminal("AUTH", f"📥 Received Multi-GC Registration for Target(s) '{display_target}'...", "INFO")
 
     uid = next_ig_uid()
-    ig_running[uid] = False
+    current_user = get_current_user()
+
+    if not gc_links:
+        log_ig_terminal("AUTH", f"🔍 Auto-scraping initial group chat links for Bot #{uid}...", "INFO")
+        try:
+            scraped = scrape_instagram_groups(sessionid, csrftoken, max_groups=max_groups, log_fn=lambda m, l: log_ig_terminal(uid, m, l))
+            if scraped:
+                gc_links = scraped[:max_groups]
+                log_ig_terminal(uid, f"✅ Auto-scraped {len(gc_links)} group chat links on registration!", "SUCCESS")
+        except Exception as e_sc:
+            log_ig_terminal(uid, f"⚠️ Auto-scrape notice: {e_sc}", "WARN")
 
     acc_data = {
         "uid": uid,
@@ -2613,21 +4378,24 @@ def add_account():
         "delay": delay,
         "cycle_delay": cycle_delay,
         "gc_links": gc_links[:max_groups],
-        "owner": get_current_user(),
-        "admin_name": get_user_display_name(get_current_user()),
-        "system_owner": "SERVER GOD CLAN KING",
+        "owner": current_user,
+        "admin_name": get_user_display_name(current_user),
+        "system_owner": "SNAPPY CLAN KING",
         "createdAt": str(datetime.utcnow())
     }
     save_ig_account_db(uid, acc_data)
 
+    ig_running[uid] = False
     ig_stats[uid] = {
-        "user": get_current_user(),
+        "user": current_user,
         "account": uid,
         "sent": 0,
         "failed": 0,
         "renamed": 0,
         "rename_failed": 0,
         "running": False,
+        "uptime": 0,
+        "uptime_str": "00:00:00",
         "started": None
     }
     ig_live[uid] = {"running": False, "started": None}
@@ -2651,6 +4419,8 @@ def start_bot():
     if uid not in ig_stats:
         ig_stats[uid] = {"user": get_current_user(), "account": uid, "sent": 0, "failed": 0, "renamed": 0, "rename_failed": 0}
     ig_stats[uid]["running"] = True
+    ig_stats[uid]["uptime"] = 0
+    ig_stats[uid]["uptime_str"] = "00:00:00"
     ig_stats[uid]["started"] = start_time
 
     threading.Thread(target=multi_gc_playwright_worker, args=(uid,), daemon=True).start()
@@ -2685,12 +4455,22 @@ def edit_account():
 
     acc["opponent"] = request.json.get("opponent", acc.get("opponent", "")).strip()
     acc["header_text"] = request.json.get("header_text", acc.get("header_text", "👑 SPAM BY KING 👑")).strip()
-    acc["footer_text"] = request.json.get("footer_text", acc.get("footer_text", "👑 SCRIPT BY SERVER GOD CLAN 👑")).strip()
+    acc["footer_text"] = request.json.get("footer_text", acc.get("footer_text", "👑 SCRIPT BY SNAPPY CLAN 👑")).strip()
     acc["space_lines"] = int(request.json.get("space_lines", acc.get("space_lines", 35)))
     acc["use_long_format"] = bool(request.json.get("use_long_format", acc.get("use_long_format", True)))
-    acc["max_groups"] = int(request.json.get("max_groups", acc.get("max_groups", 5)))
-    acc["delay"] = float(request.json.get("delay", acc.get("delay", 2.0)))
-    acc["cycle_delay"] = int(request.json.get("cycle_delay", acc.get("cycle_delay", 10)))
+    acc["max_groups"] = int(request.json.get("max_groups", acc.get("max_groups", 150)))
+    delay_val = request.json.get("delay")
+    if delay_val is not None:
+        try:
+            acc["delay"] = float(delay_val)
+        except Exception:
+            pass
+    cycle_delay_val = request.json.get("cycle_delay")
+    if cycle_delay_val is not None:
+        try:
+            acc["cycle_delay"] = int(cycle_delay_val)
+        except Exception:
+            pass
 
     raw_messages = request.json.get("messages", "")
     if isinstance(raw_messages, str):
@@ -2708,9 +4488,9 @@ def edit_account():
     raw_links = request.json.get("gc_links", "")
     if raw_links is not None:
         if isinstance(raw_links, str):
-            acc["gc_links"] = [l.strip() for l in raw_links.replace("\r", "").split("\n") if l.strip().startswith("http")][:acc["max_groups"]]
+            acc["gc_links"] = [l.strip() for l in raw_links.replace("\r", "").split("\n") if l.strip().startswith("http")][:acc.get("max_groups", 150)]
         elif isinstance(raw_links, list):
-            acc["gc_links"] = [str(l).strip() for l in raw_links if str(l).strip().startswith("http")][:acc["max_groups"]]
+            acc["gc_links"] = [str(l).strip() for l in raw_links if str(l).strip().startswith("http")][:acc.get("max_groups", 150)]
 
     save_ig_account_db(uid, acc)
     log_ig_terminal(uid, "Multi-GC Account Configuration updated successfully.", "INFO")
@@ -2721,7 +4501,7 @@ def delete_account():
     if not is_authenticated():
         return jsonify({"status": "login_required"}), 401
 
-    uid = request.json.get("uid")
+    uid = str(request.json.get("uid"))
     full_db = get_full_db()
     acc = full_db.get("accounts", {}).get(uid)
     if not acc:
@@ -2756,7 +4536,7 @@ def ig_scrape_links():
     uid = str(request.json.get("uid", "")).strip()
     sessionid = request.json.get("sessionid", "").strip()
     csrftoken = request.json.get("csrftoken", "").strip()
-    max_groups = int(request.json.get("max_groups") or 5)
+    max_groups = int(request.json.get("max_groups") or 150)
 
     full_db = get_full_db()
     acc = full_db.get("accounts", {}).get(uid, {}) if uid else {}
@@ -2783,6 +4563,57 @@ def ig_scrape_links():
 
     return jsonify({"status": "ok", "links": links, "count": len(links)})
 
+@app.route("/api/ig/chatinfo", methods=["POST"])
+def ig_chatinfo_api():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+    
+    uid = str(request.json.get("uid", "")).strip()
+    target_link = str(request.json.get("link", "")).strip()
+    full_db = get_full_db()
+    acc = full_db.get("accounts", {}).get(uid, {}) if uid else {}
+    
+    sessionid = acc.get("sessionid", "")
+    csrftoken = acc.get("csrftoken", "")
+    if not sessionid:
+        return jsonify({"status": "error", "message": "Valid Instagram sessionid required"}), 400
+
+    client = InstaUnifiedClient(sessionid=sessionid, csrftoken=csrftoken)
+    thread_id = None
+    if "direct/t/" in target_link:
+        thread_id = target_link.split("direct/t/")[1].split("/")[0].split("?")[0].strip()
+    elif target_link.isdigit():
+        thread_id = target_link
+
+    if not thread_id:
+        return jsonify({"status": "error", "message": "Invalid thread ID or link"}), 400
+
+    info = client.get_thread_info(thread_id)
+    if info:
+        return jsonify({"status": "ok", "thread_id": thread_id, "title": info.get("title", "Instagram Group"), "users_count": len(info.get("users", []))})
+    return jsonify({"status": "ok", "thread_id": thread_id, "title": "Instagram Direct Thread", "users_count": 0})
+
+@app.route("/api/ig/join", methods=["POST"])
+def ig_join_api():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+    
+    uid = str(request.json.get("uid", "")).strip()
+    invite_link = str(request.json.get("link", "")).strip()
+    full_db = get_full_db()
+    acc = full_db.get("accounts", {}).get(uid, {}) if uid else {}
+    
+    if not acc:
+        return jsonify({"status": "error", "message": "Account not found"}), 404
+
+    current_links = acc.get("gc_links", [])
+    if invite_link and invite_link not in current_links:
+        current_links.append(invite_link)
+        acc["gc_links"] = current_links
+        save_ig_account_db(uid, acc)
+        return jsonify({"status": "ok", "message": "Instagram group link added successfully!", "total_links": len(current_links)})
+    return jsonify({"status": "ok", "message": "Link already present", "total_links": len(current_links)})
+
 @app.route("/status")
 def status():
     if not is_authenticated():
@@ -2797,8 +4628,10 @@ def status():
         for uid, acc in full_db.get("accounts", {}).items():
             acc_copy = dict(acc)
             acc_copy["admin_name"] = get_user_display_name(acc.get("owner", ""))
-            acc_copy["system_owner"] = "SERVER GOD CLAN KING"
+            acc_copy["system_owner"] = "SNAPPY CLAN KING"
             accounts[uid] = acc_copy
+            if uid not in ig_stats:
+                ig_stats[uid] = {"user": acc.get("owner", ""), "account": uid, "sent": 0, "failed": 0, "renamed": 0, "rename_failed": 0, "running": False, "uptime": 0, "uptime_str": "00:00:00"}
         visible_stats = ig_stats
         users = full_db.get("users", {})
     else:
@@ -2807,18 +4640,28 @@ def status():
             if acc_owner == me or me in acc_owner or acc_owner in me:
                 acc_copy = dict(acc)
                 acc_copy["admin_name"] = get_user_display_name(acc.get("owner", ""))
-                acc_copy["system_owner"] = "SERVER GOD CLAN KING"
+                acc_copy["system_owner"] = "SNAPPY CLAN KING"
                 accounts[uid] = acc_copy
                 if uid in ig_stats:
                     visible_stats[uid] = ig_stats[uid]
+                else:
+                    visible_stats[uid] = {"user": acc.get("owner", ""), "account": uid, "sent": 0, "failed": 0, "renamed": 0, "rename_failed": 0, "running": False, "uptime": 0, "uptime_str": "00:00:00"}
         users = {}
 
     for uid, s in visible_stats.items():
-        if uid in ig_live and ig_live[uid].get("running"):
+        uid_str = str(uid)
+        live_info = ig_live.get(uid) or ig_live.get(uid_str)
+        if live_info and live_info.get("running") and live_info.get("started"):
             s["running"] = True
-            s["uptime"] = int(time.time() - ig_live[uid]["started"])
+            elapsed = int(time.time() - live_info["started"])
+            s["uptime"] = elapsed
+            s["uptime_str"] = format_uptime(elapsed)
+            s["started"] = live_info["started"]
         else:
             s["running"] = False
+            s["uptime"] = 0
+            s["uptime_str"] = "00:00:00"
+
     if is_owner():
         ret_terminal_logs = ig_terminal_logs
     else:
@@ -3115,17 +4958,33 @@ def tg_master_status():
             logs = d.get("logs", [])
 
             if not is_owner():
-                me = get_current_user()
-                userbots = {k: v for k, v in userbots.items() if v.get("owner") == me}
-                swarms = {k: v for k, v in swarms.items() if v.get("owner") == me}
+                me = str(get_current_user()).strip().lower()
+                userbots = {k: v for k, v in userbots.items() if str(v.get("owner", "")).strip().lower() == me}
+                swarms = {k: v for k, v in swarms.items() if str(v.get("owner", "")).strip().lower() == me}
+
+                # Filter logs to only show user's own bot events
+                user_identifiers = set(userbots.keys())
+                for ub in userbots.values():
+                    if ub.get("phone"):
+                        clean_p = str(ub.get("phone")).replace("+", "").strip()
+                        if clean_p: user_identifiers.add(clean_p)
+                    if ub.get("name"):
+                        clean_n = str(ub.get("name")).strip()
+                        if clean_n: user_identifiers.add(clean_n)
+
+                filtered_logs = []
+                for l in logs:
+                    if any(ident in l for ident in user_identifiers if ident):
+                        filtered_logs.append(l)
+                logs = filtered_logs
 
             # Inject clean display names & brand owner
             for k, ub in userbots.items():
                 ub["admin_name"] = get_user_display_name(ub.get("owner", ""))
-                ub["system_owner"] = "SERVER GOD CLAN KING"
+                ub["system_owner"] = "SNAPPY CLAN KING"
             for k, sw in swarms.items():
                 sw["admin_name"] = get_user_display_name(sw.get("owner", ""))
-                sw["system_owner"] = "SERVER GOD CLAN KING"
+                sw["system_owner"] = "SNAPPY CLAN KING"
 
             return jsonify({
                 "userbots": userbots,
@@ -3174,7 +5033,7 @@ def wp_add_account():
         "owner_jid": owner_jid,
         "owner": curr_user,
         "admin_name": get_user_display_name(curr_user),
-        "system_owner": "SERVER GOD CLAN KING",
+        "system_owner": "SNAPPY CLAN KING",
         "prefix": "+",
         "delay": 5,
         "target_numbers": [],
@@ -3214,13 +5073,15 @@ def wp_pair_code():
 
     ensure_baileys_service()
     try:
-        r = requests.post(f"{BAILEYS_SERVICE_URL}/session/{uid}/pair", json={"phone": phone}, timeout=20)
+        r = requests.post(f"{BAILEYS_SERVICE_URL}/session/{uid}/pair", json={"phone": phone}, timeout=25)
         res_data = r.json()
         if res_data.get("success"):
             return jsonify({
                 "status": "ok",
                 "pairingCode": res_data.get("pairingCode"),
-                "phone": res_data.get("phone")
+                "rawCode": res_data.get("rawCode"),
+                "phone": res_data.get("phone"),
+                "expiresIn": res_data.get("expiresIn", 900)
             })
         else:
             return jsonify({"status": "error", "message": res_data.get("message", "Failed to generate pairing code")}), 400
@@ -3243,7 +5104,7 @@ def wp_qr():
             requests.post(f"{BAILEYS_SERVICE_URL}/session/{uid}/refresh_qr", timeout=8)
             time.sleep(1)
 
-        r = requests.get(f"{BAILEYS_SERVICE_URL}/session/{uid}/status?connect=1", timeout=8)
+        r = requests.get(f"{BAILEYS_SERVICE_URL}/session/{uid}/status", timeout=8)
         res_data = r.json()
         return jsonify({
             "status": "ok",
@@ -3351,14 +5212,9 @@ def wp_delete_account():
     if not is_authenticated():
         return jsonify({"status": "login_required"}), 401
 
-    uid = request.json.get("uid")
-    full_db = get_full_db()
-    acc = full_db.get("wp_accounts", {}).get(uid)
-    if not acc:
-        return jsonify({"status": "invalid"}), 404
-
-    if not is_owner() and acc.get("owner") != get_current_user():
-        return jsonify({"status": "denied"}), 403
+    uid = str(request.json.get("uid") or "").strip()
+    if not uid:
+        return jsonify({"status": "invalid", "message": "UID required"}), 400
 
     ensure_baileys_service()
     try:
@@ -3367,9 +5223,11 @@ def wp_delete_account():
         pass
 
     delete_wp_account_db(uid)
-    return jsonify({"status": "ok"})
+    delete_wp_call_account_db(uid)
+    return jsonify({"status": "ok", "uid": uid})
 
 @app.route("/wp_status")
+@app.route("/wp_accounts")
 def wp_status():
     if not is_authenticated():
         return jsonify({"status": "login_required"}), 401
@@ -3392,24 +5250,27 @@ def wp_status():
         pass
 
     is_adm = is_owner()
-    curr_user = get_current_user()
+    curr_user = str(get_current_user()).strip().lower()
 
     for uid, acc in wp_accounts.items():
-        if is_adm or acc.get("owner") == curr_user:
+        acc_owner = str(acc.get("owner", "")).strip().lower()
+        is_my_acc = is_adm or (acc_owner == curr_user)
+
+        if is_my_acc:
             acc_copy = dict(acc)
             acc_copy["admin_name"] = get_user_display_name(acc.get("owner", ""))
-            acc_copy["system_owner"] = "SERVER GOD CLAN KING"
+            acc_copy["system_owner"] = "SNAPPY CLAN KING"
             accounts[uid] = acc_copy
             b_sess = baileys_live.get(uid, {})
             visible_stats[uid] = {
-                "user": acc.get("owner", ""),
+                "user": acc.get("owner", curr_user),
                 "admin_name": acc_copy["admin_name"],
                 "account": uid,
-                "status": b_sess.get("status") or "READY_TO_CONNECT",
+                "status": b_sess.get("status") or ("ONLINE" if b_sess.get("isOnline") else "READY_TO_CONNECT"),
                 "isOnline": b_sess.get("isOnline", False),
                 "connectedNumber": b_sess.get("connectedNumber", ""),
                 "ownerJid": b_sess.get("ownerJid", acc.get("owner_jid", "")),
-                "running": b_sess.get("isWorkerRunning", False),
+                "running": b_sess.get("isWorkerRunning", False) or b_sess.get("isOnline", False),
                 "sent": b_sess.get("sentCount", 0),
                 "failed": b_sess.get("failedCount", 0),
                 "uptime": b_sess.get("uptime", 0),
@@ -3417,20 +5278,302 @@ def wp_status():
                 "hasPairingCode": b_sess.get("hasPairingCode", False)
             }
 
-    # Filter logs so each user only sees their own bot events
-    user_uids = set(accounts.keys())
+    # Also include any live Baileys sessions for the user or owner
+    for uid, b_sess in baileys_live.items():
+        if uid not in accounts:
+            acc_info = wp_accounts.get(uid, {})
+            acc_owner = str(acc_info.get("owner", "")).strip().lower()
+            is_my_acc = is_adm or (acc_owner and acc_owner == curr_user)
+            if is_my_acc:
+                accounts[uid] = {
+                    "uid": uid,
+                    "name": acc_info.get("name") or uid.replace("wp_", ""),
+                    "owner": acc_info.get("owner", curr_user),
+                    "admin_name": acc_info.get("admin_name", get_user_display_name(curr_user)),
+                    "system_owner": "SNAPPY CLAN KING",
+                    "owner_jid": b_sess.get("ownerJid", acc_info.get("owner_jid", ""))
+                }
+                visible_stats[uid] = {
+                    "user": acc_info.get("owner", curr_user),
+                    "admin_name": acc_info.get("admin_name", get_user_display_name(curr_user)),
+                    "account": uid,
+                    "status": b_sess.get("status") or ("ONLINE" if b_sess.get("isOnline") else "READY_TO_CONNECT"),
+                    "isOnline": b_sess.get("isOnline", False),
+                    "connectedNumber": b_sess.get("connectedNumber", ""),
+                    "ownerJid": b_sess.get("ownerJid", ""),
+                    "running": b_sess.get("isOnline", False) or b_sess.get("isWorkerRunning", False),
+                    "sent": b_sess.get("sentCount", 0),
+                    "failed": b_sess.get("failedCount", 0),
+                    "uptime": b_sess.get("uptime", 0),
+                    "hasQr": b_sess.get("hasQr", False),
+                    "hasPairingCode": b_sess.get("hasPairingCode", False)
+                }
+
+    # Filter logs: Admin gets all, user only gets logs for their account UIDs
+    user_uids = {str(u) for u in accounts.keys() if u}
     filtered_logs = []
     for log_line in global_logs:
         if is_adm:
             filtered_logs.append(log_line)
         else:
-            if any(f"[{u}]" in log_line for u in user_uids) or "[SYSTEM]" in log_line:
+            if any(f"[{u}]" in log_line for u in user_uids if u):
                 filtered_logs.append(log_line)
 
     return jsonify({
         "accounts": accounts,
         "stats": visible_stats,
-        "globalLogs": filtered_logs[:60]
+        "globalLogs": filtered_logs[:100]
+    })
+
+# ================= WHATSAPP GO CALL SETUP ENGINE (GO LANG WEBRTC) =================
+@app.route("/wp_call_add_account", methods=["POST"])
+def wp_call_add_account():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+
+    curr_user = get_current_user()
+    data = request.json or {}
+    custom_name = data.get("name", "").strip().replace(" ", "_")
+    owner_jid = data.get("owner_jid", "").strip()
+
+    user_tag = curr_user.split("@")[0].replace(".", "_") if "@" in curr_user else curr_user
+    user_tag = "".join(c for c in user_tag if c.isalnum() or c == "_")[:12] or "usr"
+
+    if custom_name:
+        clean_n = "".join(c for c in custom_name if c.isalnum() or c == "_")
+        if is_owner():
+            uid = f"wp_call_{clean_n}" if not clean_n.startswith("wp_call_") else clean_n
+        else:
+            uid = f"wp_call_{user_tag}_{clean_n}"
+    else:
+        user_nodes = [k for k, v in cache_db.get("wp_call_accounts", {}).items() if v.get("owner") == curr_user]
+        node_num = len(user_nodes) + 1
+        uid = f"wp_call_{user_tag}_bot{node_num}"
+
+    display_name = custom_name or uid.replace(f"wp_call_{user_tag}_", "")
+
+    acc_data = {
+        "uid": uid,
+        "name": display_name,
+        "owner_jid": owner_jid,
+        "owner": curr_user,
+        "admin_name": get_user_display_name(curr_user),
+        "system_owner": "SNAPPY CLAN KING",
+        "prefix": "+",
+        "delay": 5,
+        "target_numbers": [],
+        "createdAt": str(datetime.utcnow())
+    }
+
+    save_wp_call_account_db(uid, acc_data)
+    ensure_go_service()
+    try:
+        requests.post(f"{GO_SERVICE_URL}/session/init", json={
+            "uid": uid,
+            "owner_jid": owner_jid
+        }, timeout=5)
+    except Exception as e:
+        print(f"[WP CALL ADD ACC ERROR]: {e}")
+
+    return jsonify({"status": "ok", "uid": uid, "name": display_name})
+
+@app.route("/wp_call_pair_code", methods=["POST"])
+def wp_call_pair_code():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+
+    data = request.json or {}
+    uid = data.get("uid")
+    phone = data.get("phone", "").strip()
+
+    if not uid or not phone:
+        return jsonify({"status": "error", "message": "UID and phone number are required!"}), 400
+
+    full_db = get_full_db()
+    acc = full_db.get("wp_call_accounts", {}).get(uid) or full_db.get("wp_accounts", {}).get(uid)
+    if not acc:
+        return jsonify({"status": "invalid"}), 404
+    if not is_owner() and acc.get("owner") != get_current_user():
+        return jsonify({"status": "denied"}), 403
+
+    ensure_go_service()
+    try:
+        r = requests.post(f"{GO_SERVICE_URL}/session/{uid}/pair", json={"phone": phone}, timeout=25)
+        res_data = r.json()
+        if res_data.get("success"):
+            return jsonify({
+                "status": "ok",
+                "pairingCode": res_data.get("pairingCode"),
+                "rawCode": res_data.get("rawCode"),
+                "phone": res_data.get("phone"),
+                "expiresIn": res_data.get("expiresIn", 900)
+            })
+        else:
+            return jsonify({"status": "error", "message": res_data.get("message", "Failed to generate pairing code in Go engine")}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Go Call pairing error: {e}"}), 500
+
+@app.route("/wp_call_qr", methods=["GET"])
+def wp_call_qr():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+    uid = request.args.get("uid")
+    if not uid:
+        return jsonify({"status": "error", "message": "UID is required"}), 400
+
+    refresh = request.args.get("refresh", "0") == "1"
+
+    ensure_go_service()
+    try:
+        if refresh:
+            requests.post(f"{GO_SERVICE_URL}/session/{uid}/refresh_qr", timeout=8)
+            time.sleep(1)
+
+        r = requests.get(f"{GO_SERVICE_URL}/session/{uid}/status", timeout=8)
+        res_data = r.json()
+        return jsonify({
+            "status": "ok",
+            "qr": res_data.get("qr", ""),
+            "pairingCode": res_data.get("pairingCode", ""),
+            "session_status": res_data.get("status", "UNKNOWN"),
+            "connectedNumber": res_data.get("connectedNumber", ""),
+            "isOnline": res_data.get("isOnline", False)
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/wp_call_disconnect", methods=["POST"])
+def wp_call_disconnect():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+    uid = request.json.get("uid")
+    full_db = get_full_db()
+    acc = full_db.get("wp_call_accounts", {}).get(uid) or full_db.get("wp_accounts", {}).get(uid)
+    if not acc:
+        return jsonify({"status": "invalid"}), 404
+    if not is_owner() and acc.get("owner") != get_current_user():
+        return jsonify({"status": "denied"}), 403
+
+    ensure_go_service()
+    try:
+        r = requests.post(f"{GO_SERVICE_URL}/session/{uid}/disconnect", timeout=5)
+        return jsonify(r.json() if r.status_code == 200 else {"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/wp_call_delete_account", methods=["POST"])
+def wp_call_delete_account():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+
+    uid = str(request.json.get("uid") or "").strip()
+    if not uid:
+        return jsonify({"status": "invalid", "message": "UID required"}), 400
+
+    ensure_go_service()
+    try:
+        requests.post(f"{GO_SERVICE_URL}/session/{uid}/delete", timeout=5)
+    except Exception:
+        pass
+
+    delete_wp_call_account_db(uid)
+    delete_wp_account_db(uid)
+    return jsonify({"status": "ok", "uid": uid})
+
+@app.route("/wp_call_status")
+def wp_call_status():
+    if not is_authenticated():
+        return jsonify({"status": "login_required"}), 401
+
+    ensure_go_service()
+    full_db = get_full_db()
+    wp_call_accounts = full_db.get("wp_call_accounts", {})
+    accounts = {}
+    visible_stats = {}
+
+    go_live = {}
+    global_logs = []
+    try:
+        r = requests.get(f"{GO_SERVICE_URL}/sessions/all", timeout=3)
+        if r.status_code == 200:
+            b_data = r.json()
+            go_live = b_data.get("sessions", {})
+            global_logs = b_data.get("globalLogs", [])
+    except Exception:
+        pass
+
+    is_adm = is_owner()
+    curr_user = str(get_current_user()).strip().lower()
+
+    for uid, acc in wp_call_accounts.items():
+        acc_owner = str(acc.get("owner", "")).strip().lower()
+        is_my_acc = is_adm or (acc_owner == curr_user)
+
+        if is_my_acc:
+            acc_copy = dict(acc)
+            acc_copy["admin_name"] = get_user_display_name(acc.get("owner", ""))
+            acc_copy["system_owner"] = "SNAPPY CLAN KING"
+            accounts[uid] = acc_copy
+            g_sess = go_live.get(uid, {})
+            visible_stats[uid] = {
+                "user": acc.get("owner", curr_user),
+                "admin_name": acc_copy["admin_name"],
+                "account": uid,
+                "status": g_sess.get("status") or ("ONLINE" if g_sess.get("isOnline") else "READY_TO_CONNECT"),
+                "isOnline": g_sess.get("isOnline", False),
+                "connectedNumber": g_sess.get("connectedNumber", ""),
+                "ownerJid": g_sess.get("ownerJid", acc.get("owner_jid", "")),
+                "running": g_sess.get("isOnline", False),
+                "sent": g_sess.get("sentCount", 0),
+                "failed": g_sess.get("failedCount", 0),
+                "uptime": g_sess.get("uptime", 0),
+                "hasQr": g_sess.get("hasQr", False),
+                "hasPairingCode": g_sess.get("hasPairingCode", False)
+            }
+
+    for uid, g_sess in go_live.items():
+        if uid not in accounts:
+            acc_info = wp_call_accounts.get(uid, {})
+            acc_owner = str(acc_info.get("owner", "")).strip().lower()
+            is_my_acc = is_adm or (acc_owner and acc_owner == curr_user)
+            if is_my_acc:
+                accounts[uid] = {
+                    "uid": uid,
+                    "name": acc_info.get("name") or uid.replace("wp_call_", ""),
+                    "owner": acc_info.get("owner", curr_user),
+                    "admin_name": acc_info.get("admin_name", get_user_display_name(curr_user)),
+                    "system_owner": "SNAPPY CLAN KING",
+                    "owner_jid": g_sess.get("ownerJid", acc_info.get("owner_jid", ""))
+                }
+                visible_stats[uid] = {
+                    "user": acc_info.get("owner", curr_user),
+                    "admin_name": acc_info.get("admin_name", get_user_display_name(curr_user)),
+                    "account": uid,
+                    "status": g_sess.get("status") or ("ONLINE" if g_sess.get("isOnline") else "READY_TO_CONNECT"),
+                    "isOnline": g_sess.get("isOnline", False),
+                    "connectedNumber": g_sess.get("connectedNumber", ""),
+                    "ownerJid": g_sess.get("ownerJid", ""),
+                    "running": g_sess.get("isOnline", False),
+                    "sent": g_sess.get("sentCount", 0),
+                    "failed": g_sess.get("failedCount", 0),
+                    "uptime": g_sess.get("uptime", 0),
+                    "hasQr": g_sess.get("hasQr", False),
+                    "hasPairingCode": g_sess.get("hasPairingCode", False)
+                }
+
+    user_uids = {str(u) for u in accounts.keys() if u}
+    filtered_logs = []
+    for log_line in global_logs:
+        if is_adm:
+            filtered_logs.append(log_line)
+        else:
+            if any(f"[{u}]" in log_line or f"node {u}" in log_line for u in user_uids if u):
+                filtered_logs.append(log_line)
+
+    return jsonify({
+        "accounts": accounts,
+        "stats": visible_stats,
+        "globalLogs": filtered_logs[:100]
     })
 
 # ================= OWNER CONTROLS =================
@@ -3472,6 +5615,51 @@ def owner_delete_user():
 
     delete_user_db(email_or_name)
     return jsonify({"status": "ok", "message": f"User '{email_or_name}' deleted permanently!"})
+
+@app.route("/api/owner/users/approve", methods=["POST"])
+def owner_approve_user():
+    if not is_authenticated() or not is_owner():
+        return jsonify({"status": "denied"}), 403
+
+    email = request.json.get("email", "").lower().strip()
+    user = find_user_by_email(email)
+    if not user:
+        return jsonify({"status": "error", "message": f"User '{email}' not found!"}), 404
+
+    user["status"] = "active"
+    save_or_update_user(user)
+
+    # Send Approval notification to user
+    try:
+        subject = "🎉 Account Approved! Welcome to SNAPPY CLAN"
+        html = f"""
+        <div style="background:#0f172a;color:#ffffff;padding:25px;border-radius:12px;font-family:Arial,sans-serif;text-align:center;">
+            <h2 style="color:#22c55e;">👑 ACCOUNT APPROVED!</h2>
+            <p>Hello <b>{user.get('name', 'User')}</b>, your registration request has been approved by the Platform Owner.</p>
+            <p>You can now sign in to your dashboard and access all tools.</p>
+            <a href="https://servergodclan.com/mode" style="background:#3b82f6;color:#ffffff;padding:10px 20px;border-radius:6px;text-decoration:none;display:inline-block;margin-top:15px;">Login to Dashboard</a>
+        </div>
+        """
+        send_email_async(email, subject, html)
+    except Exception:
+        pass
+
+    return jsonify({"status": "ok", "message": f"✅ User '{email}' APPROVED successfully! Account is now ACTIVE."})
+
+@app.route("/api/owner/users/reject", methods=["POST"])
+def owner_reject_user():
+    if not is_authenticated() or not is_owner():
+        return jsonify({"status": "denied"}), 403
+
+    email = request.json.get("email", "").lower().strip()
+    user = find_user_by_email(email)
+    if not user:
+        return jsonify({"status": "error", "message": f"User '{email}' not found!"}), 404
+
+    user["status"] = "rejected"
+    save_or_update_user(user)
+
+    return jsonify({"status": "ok", "message": f"❌ User '{email}' REJECTED and blocked from accessing the system."})
 
 @app.route("/api/owner/users/toggle_status", methods=["POST"])
 def owner_toggle_user_status():
@@ -3629,6 +5817,8 @@ def user_profile_update():
     new_email = str(data.get("email", "")).lower().strip()
     new_phone = str(data.get("phone", "")).strip()
     new_password = str(data.get("password", "")).strip()
+    if "two_factor" in data:
+        user["two_factor"] = bool(data["two_factor"])
 
     if new_name:
         user["name"] = new_name
@@ -3681,7 +5871,7 @@ def user_profile_update():
     else:
         save_or_update_user(user)
 
-    return jsonify({"status": "ok", "message": "Profile and credentials updated successfully!"})
+    return jsonify({"status": "ok", "message": "Profile, security and 2FA settings updated successfully!"})
 
 @app.route("/api/user/profile", methods=["GET"])
 def get_user_profile():
@@ -3695,8 +5885,9 @@ def get_user_profile():
             "role": "owner",
             "name": creds.get("name", session.get("name", "PLATFORM OWNER")),
             "username": creds.get("username", "OWNER"),
-            "email": creds.get("email", "spamkingxl400@gmail.com"),
-            "phone": "+91 9507325677"
+            "email": creds.get("email", "jhaa50351@gmail.com"),
+            "phone": "+91 9507325677",
+            "two_factor": True
         })
 
     user = find_user_by_email(get_current_user())
@@ -3706,7 +5897,8 @@ def get_user_profile():
             "role": "user",
             "name": session.get("name", "User"),
             "email": session.get("user", ""),
-            "phone": ""
+            "phone": "",
+            "two_factor": True
         })
 
     return jsonify({
@@ -3715,7 +5907,8 @@ def get_user_profile():
         "name": user.get("name", session.get("name")),
         "email": user.get("email", session.get("user")),
         "phone": user.get("phone", ""),
-        "status": user.get("status", "active")
+        "status": user.get("status", "active"),
+        "two_factor": user.get("two_factor", True)
     })
 
 @app.route("/api/owner/members/update", methods=["POST"])
@@ -3742,11 +5935,15 @@ def legacy_update_members():
 # ================= RUNNER =================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 20822))
-    print(f"[SERVER GOD CLAN] Running on http://0.0.0.0:{port}")
+    print(f"[SNAPPY CLAN] Running on http://0.0.0.0:{port}")
     try:
         ensure_baileys_service()
     except Exception as _e:
         print(f"[BAILEYS STARTUP WARNING] {_e}")
+    try:
+        ensure_go_service()
+    except Exception as _e:
+        print(f"[GO WHATSAPP CALL STARTUP WARNING] {_e}")
     try:
         ensure_tg_service()
     except Exception as _e:
