@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⚡ IGTGWP | Playwright Private API (Single & Multi GC Engine)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #05050d;
+      --card-bg: rgba(14, 15, 29, 0.88);
+      --card-border: rgba(0, 255, 204, 0.3);
+      --primary: #00ffcc;
+      --primary-hover: #1affd2;
+      --secondary: #a855f7;
+      --accent: #facc15;
+      --rose: #ff0055;
+      --text-main: #ffffff;
+      --text-muted: #94a3b8;
+      --input-bg: rgba(7, 8, 18, 0.95);
+      --input-border: rgba(255, 255, 255, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Outfit', sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      background: var(--bg-dark);
+      background-image: 
+        radial-gradient(circle at 15% 15%, rgba(0, 255, 204, 0.15) 0%, transparent 45%),
+        radial-gradient(circle at 85% 85%, rgba(168, 85, 247, 0.2) 0%, transparent 45%),
+        linear-gradient(135deg, #05050d 0%, #0d0e24 50%, #060612 100%);
+      color: var(--text-main);
+    }
+
+    .topbar {
+      padding: 16px 28px;
+      background: rgba(10, 11, 23, 0.92);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 14px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .topbar-title {
+      font-size: 20px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .btn-nav {
+      padding: 8px 16px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.08);
+      color: #ffffff;
+      transition: all 0.2s;
+    }
+
+    .btn-nav:hover { background: rgba(255, 255, 255, 0.18); }
+
+    .btn-logout {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+
+    .btn-logout:hover { background: #ef4444; color: #ffffff; }
+
+    .session-timer {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: #00ffcc;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 6px 14px;
+      border-radius: 10px;
+      border: 1px solid rgba(0, 255, 204, 0.25);
+    }
+
+    .container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 22px;
+      padding: 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .box {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      backdrop-filter: blur(18px);
+      padding: 24px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      transition: transform 0.25s, box-shadow 0.25s;
+    }
+
+    .box:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 15px 35px rgba(0, 0, 0, 0.6), 0 0 25px rgba(0, 255, 204, 0.2);
+    }
+
+    .box-title {
+      font-size: 18px;
+      font-weight: 800;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #ffffff;
+      text-shadow: 0 0 15px rgba(0, 255, 204, 0.4);
+    }
+
+    input, textarea, select {
+      width: 100%;
+      padding: 12px 14px;
+      margin-top: 8px;
+      border-radius: 10px;
+      border: 1px solid var(--input-border);
+      outline: none;
+      color: #ffffff;
+      background: var(--input-bg);
+      font-size: 14px;
