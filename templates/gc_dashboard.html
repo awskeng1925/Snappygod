@@ -372,8 +372,10 @@
       <a href="/mode" class="btn-nav">🎛️ MODES</a>
       <a href="/gc_creator" class="btn-nav" style="border-color:#38bdf8;background:rgba(56,189,248,0.25);">🎯 SINGLE GC</a>
       <a href="/multi_gc" class="btn-nav">👑 MULTI GC</a>
+      <a href="/ig_private_api" class="btn-nav" style="background:rgba(0,255,204,0.15);border-color:#00ffcc;color:#00ffcc;">⚡ PRIVATE API</a>
       <a href="/telegram_master" class="btn-nav">✈️ TELEGRAM</a>
-      <a href="/whatsapp_master" class="btn-nav">💬 WHATSAPP</a>
+      <a href="/wp_bots_nc_setup" class="btn-nav" style="background:rgba(37,211,102,0.15);border-color:#25d366;color:#25d366;">👑 BAILEYS NC</a>
+      <a href="/whatsapp_call_setup" class="btn-nav" style="background:rgba(56,189,248,0.15);border-color:#38bdf8;color:#38bdf8;">📞 WP CALL SETUP</a>
       {% if role == 'owner' %}
       <a href="/owner" class="btn-nav" style="border-color:var(--gold);background:rgba(250,204,21,0.25);color:var(--gold);">👑 OWNER</a>
       {% endif %}
@@ -391,8 +393,8 @@
       <label>Target Group Chat URL (Direct Group Link)</label>
       <input id="url" placeholder="https://www.instagram.com/direct/t/1005127962133089/">
 
-      <label>Session ID / Cookie String</label>
-      <input id="session" placeholder="Paste sessionid or complete cookie header string here...">
+      <label>Session ID / Netscape Cookie File (Paste full text or sessionid)</label>
+      <textarea id="session" style="height:70px;" placeholder="Paste sessionid, Raw Cookie Header, or Full Netscape/cURL Cookies.txt file here..."></textarea>
 
       <label>🎯 Opponent / Target Names (Haters)</label>
       <input id="opponent" value="" placeholder="Enter target name(s) (e.g. hater 1, hater 2) or leave empty...">
@@ -732,7 +734,12 @@
                     ${isRunning ? '● RUNNING' : '○ STOPPED'}
                   </span>
                 </div>
-                <p style="font-size:12px;color:#a1a1aa;margin:4px 0 10px 0;">👑 Owner: <strong style="color:#ff0055;">SERVER GOD CLAN KING</strong> | 👤 Admin: <strong style="color:#00ffcc;">${a.admin_name || a.admin || (a.owner ? a.owner.split('@')[0] : 'Admin')}</strong> | Live Strikes: <strong id="live-strikes-${uid}" style="color:#34d399;">${st.groups || 0}</strong></p>
+                <p style="font-size:12px;color:#a1a1aa;margin:4px 0 10px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                  <span>👑 Owner: <strong style="color:#ff0055;">SERVER GOD CLAN KING</strong></span> |
+                  <span>👤 Admin: <strong style="color:#00ffcc;">${a.admin_name || a.admin || (a.owner ? a.owner.split('@')[0] : 'Admin')}</strong></span> |
+                  <span>⚡ Strikes: <strong id="live-strikes-${uid}" style="color:#34d399;">${st.groups || 0}</strong></span> |
+                  <span>⏱️ Live Uptime: <strong id="live-uptime-${uid}" style="color:#38bdf8;font-family:monospace;font-size:13px;background:rgba(0,0,0,0.4);padding:2px 8px;border-radius:6px;border:1px solid rgba(56,189,248,0.2);">${st.uptime_str || '00:00:00'}</strong></span>
+                </p>
                 
                 <label>Target Group Chat URL (Live Editable)</label>
                 <input id="url-${uid}" value="${a.url || ''}" placeholder="https://www.instagram.com/direct/t/...">
@@ -803,6 +810,10 @@
             const strikesEl = document.getElementById(`live-strikes-${uid}`);
             if (strikesEl) {
               strikesEl.textContent = st.groups || 0;
+            }
+            const uptimeEl = document.getElementById(`live-uptime-${uid}`);
+            if (uptimeEl) {
+              uptimeEl.textContent = st.uptime_str || '00:00:00';
             }
           });
         }
